@@ -163,7 +163,7 @@ if (isset($options_set["verbose"]))
 {
 	$log->set_stdout();
 }
-if (isset($options_get["debug"]))
+if (isset($options_set["debug"]))
 {
 	$log->set_debug();
 }
@@ -195,7 +195,7 @@ if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'),0666
 
 // we instruct the logger class,so we can use the IPC message system to communicate
 // from the client threads
-$log->set_queue_listener($msg_queue);
+$log->set_queue_listener($msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
 
 
 // spawn one fork per device
@@ -217,7 +217,29 @@ foreach (array_keys($config) as $section)
 	if (!$fork_pids[$i])
 	{
 		// we are the child
-		$log->debug("Child process launched for device \"$section\"\n");
+
+
+		/*
+			Create a new logger object, we need to log via the IPC
+			message queue, rather than into the same text log file
+			and ending up with write clashes.
+
+			Note: we don't do print to STDOUT here, it's something
+			that the master will do for us - although there's no
+			reason why we couldn't do it here if we so desired.
+		*/
+
+		$log_t = new logger();
+		
+		if (isset($options_set["debug"]))
+		{
+			$log_t->set_debug();
+		}
+
+		$log_t->set_queue_sender($msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
+
+		$log_t->debug("Child process launched for device \"$section\"\n");
+
 
 		/*
 			Establish connection to the XMPP server
@@ -225,7 +247,7 @@ foreach (array_keys($config) as $section)
 
 		if (!$config[$section]["xmpp_server"])
 		{
-			$log->error_fatal("An XMPP server must be configured");
+			$log_t->error_fatal("An XMPP server must be configured");
 		}
 		if (!$config[$section]["xmpp_port"])
 		{
@@ -234,11 +256,11 @@ foreach (array_keys($config) as $section)
 		}
 		if (!$config[$section]["xmpp_username"])
 		{
-			$log->error_fatal("An XMPP user must be configured");
+			$log_t->error_fatal("An XMPP user must be configured");
 		}
 		if (!$config[$section]["xmpp_reciever"])
 		{
-			$log->error_fatal("An XMPP reciever must be configured!");
+			$log_t->error_fatal("An XMPP reciever must be configured!");
 		}
 
 
@@ -284,7 +306,7 @@ foreach (array_keys($config) as $section)
 						{
 							// denied
 							$conn->message($pl["from"], $body="Sorry you are not a user whom is permitted to talk with me. :-(");
-							print "[$section] Denied connection attempt from {$pl["from"]}, only connections from {$config[$section]["xmpp_reciever"]} are permitted\n";
+							$log_t->warning("[$section] Denied connection attempt from {$pl["from"]}, only connections from {$config[$section]["xmpp_reciever"]} are permitted");
 
 							break;
 						}
@@ -302,17 +324,17 @@ foreach (array_keys($config) as $section)
 							break;
 
 							default:
-								print "[$section] XMPP message recieved! \"". $pl["body"] ."\"\n";
+								$log_t->debug("[$section] XMPP message recieved! \"". $pl["body"] ."\"");
 							break;
 						}
 					break;
 
 					case 'presence':
-						print "[$section] Presence notification from ". $pl["from"] ." with status of ". $pl["status"] ."\n";
+						$log_t->debug("[$section] Presence notification from ". $pl["from"] ." with status of ". $pl["status"] ."");
 					break;
 
 					case 'session_start':
-						print "[$section] Established XMPP connection\n";
+						$log_t->debug("[$section] Established XMPP connection & listening for inbound requests");
 
 						// Online and Ready
 						$conn->getRoster();
@@ -327,7 +349,7 @@ foreach (array_keys($config) as $section)
 					break;
 
 					case 'end_stream':
-						print "[$section] User closed our XMPP session\n";
+						$log_t->debug("[$section] User closed our XMPP session");
 					break;
 				}
 			}
@@ -356,7 +378,7 @@ foreach (array_keys($config) as $section)
 						)
 					*/
 
-					print "[$section] Recieved SMS message from {$message["phone"]} with content of {$message["body"]}\n";
+					$log_t->debug("[$section] Recieved SMS message from {$message["phone"]} with content of {$message["body"]}");
 
 					if (!$current_chat)
 					{
@@ -385,8 +407,8 @@ foreach (array_keys($config) as $section)
 					switch ($message)
 					{
 						case "shutdown":
-							print "[$section] Shutdown command recieved!\n";
-							print "[$section] Peak memory usage of ". memory_get_peak_usage() ." bytes\n";
+							$log_t->info("[$section] Shutdown command recieved!");
+							$log_t->debug("[$section] Peak memory usage of ". memory_get_peak_usage() ." bytes");
 							$conn->message($config[$section]["xmpp_reciever"], $body="Gateway shutting down... goodbye!");
 
 							// terminate fork cleanly
@@ -395,7 +417,7 @@ foreach (array_keys($config) as $section)
 						break;
 
 						default:
-							print "[$section] Unknown message instruction recieved\n";
+							$log_t->debug("[$section] Unknown message instruction recieved");
 						break;
 					}
 				}
@@ -403,9 +425,10 @@ foreach (array_keys($config) as $section)
 			} // end if available messages
 		}
 
-    		$conn->disconnect();
 
 		// terminate
+    		$conn->disconnect();
+		unset($log_t);
 		exit();
 	}
 
@@ -420,17 +443,17 @@ foreach (array_keys($config) as $section)
 	just needs to listen to log messages from the threads and handle cleanly
 	shutting down the application in response to signals.
 */
+sleep(20);
+//while (true)
+//{
+	// write any log messages
+	$log->write_fromqueue();
 
-while (true)
-{
-	$message = null;
-	$message_type = null;
+	// check for signals
 
-	if (msg_receive($msg_queue, MESSAGE_LOG, $message_type, MESSAGE_MAX_SIZE, $message, TRUE, MSG_IPC_NOWAIT))
-	{
-		$log->$message[$level]($message[$level]);
-	}
-}
+//	// enforce pace
+//	sleep 1;
+//}
 				
 
 
@@ -450,7 +473,7 @@ for ($i=0; $i < count($fork_pids); $i++)
 
 foreach ($fork_pids as $pid)
 {
-	print "Waiting for child processes to complete... ($pid)\n";
+	$log->debug("Waiting for child processes to complete... ($pid)");
 	pcntl_waitpid($pid, $status, WUNTRACED);
 }
 
@@ -461,8 +484,8 @@ unlink($config["SMStoXMPP"]["app_lock"]);
 msg_remove_queue($msg_queue);
 
 // complete
-$log->info("[master] Peak memory usage of ". memory_get_peak_usage() ." bytes");
-$log->info("Clean Shutdown");
+$log->debug("[master] Peak memory usage of ". memory_get_peak_usage() ." bytes");
+$log->info("Clean shutdown completed");
 
 exit();
 
