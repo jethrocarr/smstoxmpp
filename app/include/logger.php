@@ -166,17 +166,32 @@ class logger
 		process. Non-blocking check.
 	*/
 
-	function write_fromqueue()
+	function write_fromqueue($blocking = false)
 	{
 		if ($this->option_set_queue_listener)
 		{
 			$message = "";
 			$message_type = "";
+			$errorcode = null;
 
-			if (msg_receive($this->msgqueue_handle, $this->msgqueue_type, $message_type, $this->msgqueue_maxsize, $message, TRUE, MSG_IPC_NOWAIT))
+			if ($blocking == true)
+			{
+				$return = msg_receive($this->msgqueue_handle, $this->msgqueue_type, $message_type, $this->msgqueue_maxsize, $message, TRUE, $errorcode);
+			}
+			else
+			{
+				$return = msg_receive($this->msgqueue_handle, $this->msgqueue_type, $message_type, $this->msgqueue_maxsize, $message, TRUE, MSG_IPC_NOWAIT);
+			}
+
+			if ($return)
 			{
 				// call the appropiate write function for the level defined
 				$this->$message['level']($message['body']);
+			}
+
+			if ($errorcode)
+			{
+				print "Serious Error: MSG queue recieve failed with $errorcode\n";
 			}
 
 			return 1;

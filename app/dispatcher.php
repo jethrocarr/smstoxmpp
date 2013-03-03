@@ -18,12 +18,97 @@
 	Licensed under the GNU AGPL license.
 */
 
+declare(ticks = 1);
+
 // external libraries
 include 'XMPPHP/XMPP.php';
 
 // internal libraries
 include 'include/defines.php';
 include 'include/logger.php';
+
+
+/*
+	We use a custom signal handler to capture termination requests and cleanly
+	terminate the process.
+
+	The daemon master just loops forever until a shutdown is recieved, in which case
+	it handles the clean shutdown & termination of processes.
+*/
+
+function sig_handler_parent($signo)
+{
+	global $log;
+	global $fork_pids;
+	global $pid_logger;
+	global $pid_parent;
+	global $msg_queue;
+	global $config;
+
+	if ($signo == SIGTERM || $signo == SIGHUP || $signo == SIGINT || $signo == SIGUSR1)
+	{
+		/*
+			Terminate the daemon and all the associated threads
+
+			We send a shutdown command for each thread and then wait
+			for them to cleanly terminate.
+		*/
+		print "Parent signal handler\n";
+
+		$log->debug("Shutdown POSIX signal recieved");
+
+		for ($i=0; $i < count($fork_pids); $i++)
+		{
+			msg_send($msg_queue, MESSAGE_CTRL, "shutdown");
+		}
+
+		foreach ($fork_pids as $pid)
+		{
+
+			$log->debug("Waiting for child processes to complete... ($pid)");
+			pcntl_waitpid($pid, $status, WUNTRACED);
+		}
+
+
+		/*
+			Clean Wrapup
+		*/
+
+		$log->debug("[master] Peak memory usage of ". memory_get_peak_usage() ." bytes");
+		$log->info("[master] Clean Shutdown");
+
+		// send shutdown to logger fork
+		posix_kill($pid_logger, SIGTERM);
+		pcntl_waitpid($pid_logger, $status, WUNTRACED);
+
+		// remove message queue
+		msg_remove_queue($msg_queue);
+		unlink($config["SMStoXMPP"]["app_lock"]);
+
+		exit();
+	}
+	else
+	{
+		print "Unknown signal of $signo!\n";
+		$log->info("Recieved unproccessible POSIX signal of \"$signo\", ignoring");
+	}
+}
+
+function sig_handler_child($signo)
+{
+	// do nothing - the termination will be handled by the parent
+	print "Child signal handler, ignoring signal for 10 seconds, then dying\n";
+		
+	// terminate parent
+	posix_kill($pid_parent, SIGUSR1);
+
+	// die if not logger
+	global $pid_logger;
+	if (getmypid() != $pid_logger)
+	{
+		exit(1);
+	}
+}
 
 
 
@@ -97,6 +182,10 @@ if (isset($options_set["d"]))
 {
 	$options_set["debug"] = true;
 }
+if (isset($options_set["D"]))
+{
+	$options_set["daemon"] = true;
+}
 
 
 // version display then quit
@@ -153,22 +242,39 @@ if (!file_exists($options_set["config"]))
 $config = parse_ini_file($options_set["config"], true);
 
 
+
+
+
+
 /*
-	Establish Logging
+	Fork Daemon Master
+
+	Here we fork the daemon master process. This allows us to then terminate the launched process
+	so that the master can continue to run as a background task.
 */
-$log = New logger();
-$log->set_logfile($config["SMStoXMPP"]["app_log"]);
 
-if (isset($options_set["verbose"]))
+$pid_parent = pcntl_fork();
+
+if ($pid_parent)
 {
-	$log->set_stdout();
-}
-if (isset($options_set["debug"]))
-{
-	$log->set_debug();
+	// we are the original process, not the forked one
+
+	if (isset($options_set["daemon"]))
+	{
+		print "Launched Background Daemon\n";
+		exit();
+	}
+	else
+	{
+		// run in the foreground and wait for all the child processes to shutdown
+		// effectively we're doing nothing, but it allows foreground logging to display
+		// and CTL+C signals get passed through to the clients.
+
+		pcntl_waitpid(-1,$status);
+		exit();
+	}
 }
 
-$log->info("Launched ". APP_NAME ." (". APP_VERSION .")");
 
 
 
@@ -179,23 +285,97 @@ $log->info("Launched ". APP_NAME ." (". APP_VERSION .")");
 */
 if (file_exists($config["SMStoXMPP"]["app_lock"]))
 {
-	$log->error_fatal("Queue already exists, dispatcher already running?");
+	die("Fatal Error: Queue already exists, dispatcher already running?\n");
 
 }
 
 if (!touch($config["SMStoXMPP"]["app_lock"]))
 {
-	$log->error_fatal("Unable to create lock file");
+	die("Fatal Error: Unable to create lock file\n");
 }
 
 if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'),0666 | IPC_CREAT))
 {
-	$log->error_fatal("Unable to attach to queue ". $config["SMStoXMPP"]["app_lock"] ."");
+	die("Fatal Error: Unable to attach to queue ". $config["SMStoXMPP"]["app_lock"] ."\n");
 }
 
-// we instruct the logger class,so we can use the IPC message system to communicate
-// from the client threads
-$log->set_queue_listener($msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
+
+/*
+	Establish Logging
+
+*/
+
+$pid_logger = pcntl_fork();
+
+if (!$pid_logger)
+{
+	/*
+		We run the logger as a seporate fork so that it can constantly run a blocking
+		listen for log messages from the other processes and components of this application.
+
+		All other processes including the master send their logs via IPC to the logger fork.
+	*/
+
+	$log = New logger();
+
+	$log->set_queue_listener(&$msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
+	$log->set_logfile($config["SMStoXMPP"]["app_log"]);
+
+	if (isset($options_set["verbose"]))
+	{
+		$log->set_stdout();
+	}
+	if (isset($options_set["debug"]))
+	{
+		$log->set_debug();
+	}
+
+
+//	pcntl_signal(SIGTERM, "sig_handler_child", false);
+//	pcntl_signal(SIGHUP,  "sig_handler_child", false);
+//	pcntl_signal(SIGINT, "sig_handler_child", false);
+//	pcntl_signal(SIGUSR1, "sig_handler_child", false);
+
+
+	$log->debug("Launched logger fork");
+
+	// blocking write of logs
+	while (true)
+	{
+		$log->write_fromqueue($blocking = true);
+	}
+
+	// terminate
+	print "Logger terminated!";
+	exit();
+}
+else
+{
+	/*
+		We are the master (and will become the worker processes)
+		
+		Create a new logger object, we need to log via the IPC
+		message queue, rather than into the same text log file
+		and ending up with write clashes.
+
+		Note: we don't do print to STDOUT here, it's something
+		that the logger process will do for us - although there's no
+		reason why we couldn't do it here if we so desired.
+	*/
+
+	$log = new logger();
+	
+	if (isset($options_set["debug"]))
+	{
+		$log->set_debug();
+	}
+
+	$log->set_queue_sender(&$msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
+}
+
+$log->info("[master] Launched ". APP_NAME ." (". APP_VERSION .")");
+
+
 
 
 // spawn one fork per device
@@ -217,28 +397,12 @@ foreach (array_keys($config) as $section)
 	if (!$fork_pids[$i])
 	{
 		// we are the child
+		$log->debug("Child process launched for device \"$section\"\n");
 
-
-		/*
-			Create a new logger object, we need to log via the IPC
-			message queue, rather than into the same text log file
-			and ending up with write clashes.
-
-			Note: we don't do print to STDOUT here, it's something
-			that the master will do for us - although there's no
-			reason why we couldn't do it here if we so desired.
-		*/
-
-		$log_t = new logger();
-		
-		if (isset($options_set["debug"]))
-		{
-			$log_t->set_debug();
-		}
-
-		$log_t->set_queue_sender($msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
-
-		$log_t->debug("Child process launched for device \"$section\"\n");
+//		pcntl_signal(SIGTERM, "sig_handler_child");
+//		pcntl_signal(SIGHUP,  "sig_handler_child");
+//		pcntl_signal(SIGINT, "sig_handler_child");
+//		pcntl_signal(SIGUSR1, "sig_handler_child");
 
 
 		/*
@@ -247,7 +411,7 @@ foreach (array_keys($config) as $section)
 
 		if (!$config[$section]["xmpp_server"])
 		{
-			$log_t->error_fatal("An XMPP server must be configured");
+			$log->error_fatal("An XMPP server must be configured");
 		}
 		if (!$config[$section]["xmpp_port"])
 		{
@@ -256,16 +420,15 @@ foreach (array_keys($config) as $section)
 		}
 		if (!$config[$section]["xmpp_username"])
 		{
-			$log_t->error_fatal("An XMPP user must be configured");
+			$log->error_fatal("An XMPP user must be configured");
 		}
 		if (!$config[$section]["xmpp_reciever"])
 		{
-			$log_t->error_fatal("An XMPP reciever must be configured!");
+			$log->error_fatal("An XMPP reciever must be configured!");
 		}
 
 
 		$conn = new XMPPHP_XMPP($config[$section]["xmpp_server"], $config[$section]["xmpp_port"], $config[$section]["xmpp_username"], $config[$section]["xmpp_password"], $section, $config[$section]["xmpp_domain"], $printlog=false, $loglevel=XMPPHP_Log::LEVEL_INFO);
-
 		try
 		{
 			$conn->connect();
@@ -306,7 +469,7 @@ foreach (array_keys($config) as $section)
 						{
 							// denied
 							$conn->message($pl["from"], $body="Sorry you are not a user whom is permitted to talk with me. :-(");
-							$log_t->warning("[$section] Denied connection attempt from {$pl["from"]}, only connections from {$config[$section]["xmpp_reciever"]} are permitted");
+							$log->warning("[$section] Denied connection attempt from {$pl["from"]}, only connections from {$config[$section]["xmpp_reciever"]} are permitted");
 
 							break;
 						}
@@ -324,17 +487,17 @@ foreach (array_keys($config) as $section)
 							break;
 
 							default:
-								$log_t->debug("[$section] XMPP message recieved! \"". $pl["body"] ."\"");
+								$log->debug("[$section] XMPP message recieved! \"". $pl["body"] ."\"");
 							break;
 						}
 					break;
 
 					case 'presence':
-						$log_t->debug("[$section] Presence notification from ". $pl["from"] ." with status of ". $pl["status"] ."");
+						$log->debug("[$section] Presence notification from ". $pl["from"] ." with status of ". $pl["status"] ."");
 					break;
 
 					case 'session_start':
-						$log_t->debug("[$section] Established XMPP connection & listening for inbound requests");
+						$log->debug("[$section] Established XMPP connection & listening for inbound requests");
 
 						// Online and Ready
 						$conn->getRoster();
@@ -349,7 +512,7 @@ foreach (array_keys($config) as $section)
 					break;
 
 					case 'end_stream':
-						$log_t->debug("[$section] User closed our XMPP session");
+						$log->debug("[$section] User closed our XMPP session");
 					break;
 				}
 			}
@@ -378,7 +541,7 @@ foreach (array_keys($config) as $section)
 						)
 					*/
 
-					$log_t->debug("[$section] Recieved SMS message from {$message["phone"]} with content of {$message["body"]}");
+					$log->debug("[$section] Recieved SMS message from {$message["phone"]} with content of {$message["body"]}");
 
 					if (!$current_chat)
 					{
@@ -407,8 +570,8 @@ foreach (array_keys($config) as $section)
 					switch ($message)
 					{
 						case "shutdown":
-							$log_t->info("[$section] Shutdown command recieved!");
-							$log_t->debug("[$section] Peak memory usage of ". memory_get_peak_usage() ." bytes");
+							$log->info("[$section] Shutdown command recieved!");
+							$log->debug("[$section] Peak memory usage of ". memory_get_peak_usage() ." bytes");
 							$conn->message($config[$section]["xmpp_reciever"], $body="Gateway shutting down... goodbye!");
 
 							// terminate fork cleanly
@@ -417,7 +580,7 @@ foreach (array_keys($config) as $section)
 						break;
 
 						default:
-							$log_t->debug("[$section] Unknown message instruction recieved");
+							$log->debug("[$section] Unknown message instruction recieved");
 						break;
 					}
 				}
@@ -428,7 +591,7 @@ foreach (array_keys($config) as $section)
 
 		// terminate
     		$conn->disconnect();
-		unset($log_t);
+		unset($log);
 		exit();
 	}
 
@@ -438,54 +601,26 @@ foreach (array_keys($config) as $section)
 
 
 
-/*
-	Forks are running now and will continue to handle requests. The master
-	just needs to listen to log messages from the threads and handle cleanly
-	shutting down the application in response to signals.
-*/
-sleep(20);
-//while (true)
-//{
-	// write any log messages
-	$log->write_fromqueue();
-
-	// check for signals
-
-//	// enforce pace
-//	sleep 1;
-//}
-				
-
 
 
 /*
-	Terminate the daemon and all the associated threads
+	Wait till shutdown
 
-	We send a shutdown command for each thread and then wait
-	for them to cleanly terminate before pulling down the message
-	queue.
+	We perform a blocking wait until all the child forks have shutdown (or via a
+	shutdown being initiated via the master using signal handlers).
+
+	Technically, this wait will never be completed, since the shutdown should
+	take place using the signal handler logic and then the process will terminate 
+	before this wait completes. :-)
 */
 
-for ($i=0; $i < count($fork_pids); $i++)
-{
-	msg_send($msg_queue, MESSAGE_CTRL, "shutdown");
-}
+pcntl_signal(SIGTERM, "sig_handler_parent", false);
+pcntl_signal(SIGHUP,  "sig_handler_parent", false);
+pcntl_signal(SIGINT, "sig_handler_parent", false);
+pcntl_signal(SIGUSR1, "sig_handler_parent", false);
 
-foreach ($fork_pids as $pid)
-{
-	$log->debug("Waiting for child processes to complete... ($pid)");
-	pcntl_waitpid($pid, $status, WUNTRACED);
-}
+pcntl_waitpid(-1,$status);
 
-// remove message queue
-unlink($config["SMStoXMPP"]["app_lock"]);
-
-// remove message queue
-msg_remove_queue($msg_queue);
-
-// complete
-$log->debug("[master] Peak memory usage of ". memory_get_peak_usage() ." bytes");
-$log->info("Clean shutdown completed");
-
-exit();
+// unexpected ending
+die("Unexpected application ending");
 
