@@ -12,13 +12,11 @@
 		  and then generates XMPP messages to the user.
 	
 	There are also some optional functions this application is responsible for:
-	- Resolution of phone numbers against CardDAV directories
+	- Resolution of phone numbers against CardDAV directories (TODO)
 
 	Copyright 2013 Jethro Carr <jethro.carr@jethrocarr.com>
 	Licensed under the GNU AGPL license.
 */
-
-declare(ticks = 1);
 
 // external libraries
 include 'XMPPHP/XMPP.php';
@@ -29,23 +27,34 @@ include 'include/logger.php';
 
 
 /*
-	We use a custom signal handler to capture termination requests and cleanly
-	terminate the process.
+	Custom Signal Handlers
 
-	The daemon master just loops forever until a shutdown is recieved, in which case
-	it handles the clean shutdown & termination of processes.
+	Due to the multi-process nature, logger and other complexities, we need to
+	intercept the usual signal handling so that we can cleanly shutdown all
+	the threads and the parent process.
+
+	All the logic is in the parent process, which does a clean shutdown upon
+	a SIGTERM/SIGHUP/SIGINT and as part of it, sends a shutdown to all the child
+	processes.
+
+	The child processes themselves have a custom handler to prevent a SIGINT from
+	terminating the process - instead, it will send a SIGTERM to the parent upon
+	recieving a SIGINT, so that the parent gets to handle the proper shutdown
+	of the process.
 */
+
+declare(ticks = 1);
+$pid_parent = getmypid();
 
 function sig_handler_parent($signo)
 {
 	global $log;
 	global $fork_pids;
 	global $pid_logger;
-	global $pid_parent;
 	global $msg_queue;
 	global $config;
 
-	if ($signo == SIGTERM || $signo == SIGHUP || $signo == SIGINT || $signo == SIGUSR1)
+	if ($signo == SIGTERM || $signo == SIGHUP || $signo == SIGINT)
 	{
 		/*
 			Terminate the daemon and all the associated threads
@@ -53,7 +62,6 @@ function sig_handler_parent($signo)
 			We send a shutdown command for each thread and then wait
 			for them to cleanly terminate.
 		*/
-		print "Parent signal handler\n";
 
 		$log->debug("Shutdown POSIX signal recieved");
 
@@ -96,17 +104,18 @@ function sig_handler_parent($signo)
 
 function sig_handler_child($signo)
 {
-	// do nothing - the termination will be handled by the parent
-	print "Child signal handler, ignoring signal for 10 seconds, then dying\n";
-		
-	// terminate parent
-	posix_kill($pid_parent, SIGUSR1);
+	global $pid_parent;
 
-	// die if not logger
-	global $pid_logger;
-	if (getmypid() != $pid_logger)
+	if ($signo == SIGTERM || $signo == SIGHUP)
 	{
-		exit(1);
+		exit();
+	}
+	elseif ($signo == SIGINT || $signo == SIGUSR1)
+	{
+		// interrupt - we should send a kill to the parent process, so that
+		// it actually gets the shutdown command, since if the SIGINT has come
+		// to the child first, the parent won't have recieved an alert
+		posix_kill($pid_parent, SIGTERM);
 	}
 }
 
@@ -228,51 +237,98 @@ if (isset($options_set["help"]))
 
 
 // set default unless an override option has been provided.
-if (!$options_set["config"])
+if (isset($options_set["config"]))
 {
-	$options_set["config"] = "config/sample_config.ini";
+	$options_set["config_file"] = $options_set["config"];
+}
+else
+{
+	$currdir = realpath(dirname(__FILE__));
+
+	$options_set["config_file"] = "$currdir/config/sample_config.ini";
 }
 
-if (!file_exists($options_set["config"]))
+if (!file_exists($options_set["config_file"]))
 {
-	die("Fatal Error: Unable to open configuration file ". $options_set["config"] ."\n");
+	die("Fatal Error: Unable to open configuration file ". $options_set["config_file"] ."\n");
 }
 
 // read configuration file
-$config = parse_ini_file($options_set["config"], true);
-
+$config = parse_ini_file($options_set["config_file"], true);
 
 
 
 
 
 /*
-	Fork Daemon Master
+	Daemon Mode
 
-	Here we fork the daemon master process. This allows us to then terminate the launched process
-	so that the master can continue to run as a background task.
+	By default, the program runs in the foreground, with the parent process become
+	a simple blocking wait that monitors the child processes and cleanly shuts them
+	down once complete.
+	
+	However when called with the -D option, we want to turn this process into a proper
+	daemon, in which case we need to pcntl_exec() this same program, but without the -D
+	option, so that the new process runs as expected.
 */
 
-$pid_parent = pcntl_fork();
-
-if ($pid_parent)
+if (isset($options_set["daemon"]))
 {
-	// we are the original process, not the forked one
-
-	if (isset($options_set["daemon"]))
+	if ($options_set["debug"])
 	{
-		print "Launched Background Daemon\n";
-		exit();
+		print "Launching background process & terminating current process (Daemon mode)\n";
 	}
-	else
-	{
-		// run in the foreground and wait for all the child processes to shutdown
-		// effectively we're doing nothing, but it allows foreground logging to display
-		// and CTL+C signals get passed through to the clients.
 
-		pcntl_waitpid(-1,$status);
-		exit();
+	// get this executable program name
+	$program = $argv[0];
+
+	// only pass through useful arguments
+	$arguments = array();
+
+	if (isset($options_set["debug"]))
+	{
+		$arguments[] = "--debug";
 	}
+
+	if (isset($options_set["config"]))
+	{
+		$arguments[] = "--config={$options_set["config"]}";
+	}
+
+
+	// we fork, then 
+	$pid = pcntl_fork();
+
+	if (!$pid)
+	{
+
+		// launch new instance
+		pcntl_exec($program, $arguments);
+	}
+
+	// terminate origional parent leaving only the backgrounded processes
+	exit();
+}
+
+
+/*
+	Run as a non-privileged user.
+
+	Considering we are running as a long running process, we should
+	definetely run as a non-privileged user to protect in case of a 
+	worst-case exploit.
+
+	Note that this doesn't apply unless the process is launched by
+	the root user, such as when started by init
+*/
+
+if ($config["SMStoXMPP"]["app_user"] && $config["SMStoXMPP"]["app_group"])
+{
+	$user = posix_getpwnam($config["SMStoXMPP"]["app_user"]);
+	@posix_setuid($user['uid']);
+
+	$group = posix_getgrnam($config["SMStoXMPP"]["app_group"]);
+	@posix_setgid($group['gid']);
 }
 
 
@@ -298,6 +354,7 @@ if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'),0666
 {
 	die("Fatal Error: Unable to attach to queue ". $config["SMStoXMPP"]["app_lock"] ."\n");
 }
+
 
 
 /*
@@ -330,14 +387,15 @@ if (!$pid_logger)
 		$log->set_debug();
 	}
 
-
-//	pcntl_signal(SIGTERM, "sig_handler_child", false);
-//	pcntl_signal(SIGHUP,  "sig_handler_child", false);
-//	pcntl_signal(SIGINT, "sig_handler_child", false);
-//	pcntl_signal(SIGUSR1, "sig_handler_child", false);
-
-
 	$log->debug("Launched logger fork");
+
+
+	// handle posix signals in a sane way
+	pcntl_signal(SIGTERM, "sig_handler_child", false);
+	pcntl_signal(SIGHUP,  "sig_handler_child", false);
+	pcntl_signal(SIGINT, "sig_handler_child", false);
+	pcntl_signal(SIGUSR1, "sig_handler_child", false);
+
 
 	// blocking write of logs
 	while (true)
@@ -346,13 +404,14 @@ if (!$pid_logger)
 	}
 
 	// terminate
-	print "Logger terminated!";
+	// in reality, we will never get here - SIGTERM will kill
+	// the above block and then just stop this fork & GC.
 	exit();
 }
 else
 {
 	/*
-		We are the master (and will become the worker processes)
+		We are the parent process
 		
 		Create a new logger object, we need to log via the IPC
 		message queue, rather than into the same text log file
@@ -399,11 +458,6 @@ foreach (array_keys($config) as $section)
 		// we are the child
 		$log->debug("Child process launched for device \"$section\"\n");
 
-//		pcntl_signal(SIGTERM, "sig_handler_child");
-//		pcntl_signal(SIGHUP,  "sig_handler_child");
-//		pcntl_signal(SIGINT, "sig_handler_child");
-//		pcntl_signal(SIGUSR1, "sig_handler_child");
-
 
 		/*
 			Establish connection to the XMPP server
@@ -445,6 +499,14 @@ foreach (array_keys($config) as $section)
 		// generate a message type ID we can use to listen on
 		$msg_mylistener = intval(base_convert(hash("crc32", $section, false), 16, 10));
 
+
+		// handle posix signals in a sane way
+		pcntl_signal(SIGTERM, "sig_handler_child");
+		pcntl_signal(SIGHUP,  "sig_handler_child");
+		pcntl_signal(SIGINT, "sig_handler_child");
+		pcntl_signal(SIGUSR1, "sig_handler_child");
+
+
 		while (true)
 		{
 			/*
@@ -479,6 +541,7 @@ foreach (array_keys($config) as $section)
 						{
 							case "about":
 							case "license":
+							case "version":
 							case "help":
 								$conn->message($pl["from"], $body="". APP_NAME ." (". APP_VERSION .")");
 								$conn->message($pl["from"], $body="". APP_HOMEPAGE ."");
