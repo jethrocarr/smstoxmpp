@@ -493,12 +493,43 @@ foreach (array_keys($config) as $section)
 		}
 
 
+		/*
+			Launch gateway/device logic
+
+			All the gateway/device logic is broken into include files that are only loaded into
+			the particular worker fork which is using that gateway. If we can't load it for some
+			reason we should fail with an error to all the apps.
+		*/
+		
+		if (!$config[$section]["gw_type"])
+		{
+			$log->error_fatal("There is no gateway set! Unable to proceed!");
+		}
+
+		$gatewayfile = "include/gateways/". $config[$section]["gw_type"] .".php";
+
+		if (!file_exists($gatewayfile))
+		{
+			$log->error_fatal("The gateway include $gatewayfile could not be located - is this the correct gateway name?");
+		}
+		
+		include($gatewayfile);
+
+		$gateway = New device_gateway;
+
+
+
+		/*
+			Start Message Processer
+		*/
+
+
 		// track whom we are chatting with
-		$current_chat = null;
+		$current_chat		= null;
+		$current_status		= null;
 
 		// generate a message type ID we can use to listen on
 		$msg_mylistener = intval(base_convert(hash("crc32", $section, false), 16, 10));
-
 
 		// handle posix signals in a sane way
 		pcntl_signal(SIGTERM, "sig_handler_child");
@@ -539,18 +570,122 @@ foreach (array_keys($config) as $section)
 						// process message
 						switch ($pl["body"])
 						{
+							case "help":
 							case "about":
 							case "license":
 							case "version":
-							case "help":
-								$conn->message($pl["from"], $body="". APP_NAME ." (". APP_VERSION .")");
-								$conn->message($pl["from"], $body="". APP_HOMEPAGE ."");
-								$conn->message($pl["from"], $body="Licensed under the ". APP_LICENSE ." license.");
-								$conn->message($pl["from"], $body="Running on PHP version ". phpversion() ."");
+								/*
+									User help & application status
+								*/
+
+								$help = array();
+
+								$help[] = "". APP_NAME ." (". APP_VERSION .")";
+								
+								if ($pl["body"] == "help")
+								{
+									$help[] = " ";
+									$help[] = "GENERAL USE:";
+									$help[] = "---";
+									$help[] = "To open a new chat, prefix the message with the destination phone number, eg:";
+									$help[] = "+121234567 example message";
+									$help[] = "or";
+									$help[] = "123456 example message";
+									$help[] = " ";
+									$help[] = "Once a chat is open (by yourself or by an incomming message) any replies without a prefix number will go to the current active chat recipient automatically.";
+									$help[] = " ";
+									$help[] = " ";
+									$help[] = "Special Commands";
+									$help[] = "---";
+									$help[] = " ";
+									$help[] = "help\tThis help message";
+									$help[] = "version\tApplication & platform version information.";
+									$help[] = "health_check\tPerform an instant check of the gateway device status.";
+									$help[] = " ";
+								}
+
+								$help[] = "". APP_HOMEPAGE ."";
+								$help[] = "Licensed under the ". APP_LICENSE ." license.";
+								$help[] = "Running on PHP version ". phpversion() ."";
+
+								foreach ($help as $body)
+								{
+									$conn->message($pl["from"], $body);
+								}
+							break;
+
+							case "health_check":
+								/*
+									Force a health check
+								*/
+
+								if ($gateway->health_check($force=true))
+								{
+									$conn->message($pl["from"], $body="Health check was successful!");
+								}
+								else
+								{
+									$conn->message($pl["from"], $body="Health check was unsuccessful :-(");
+								}
+
+								$current_status = null;
 							break;
 
 							default:
+								/*
+									An actual message, we need to check it for syntax validity.
+
+									Should be either
+									"message text here" when in context of an existing chat
+									or
+									"+12134567: message text here" when direct sending
+								*/
+								
+								// toss out those @$%^&* newlines
+								if ($pl["body"] == "")
+								{
+									break;
+								}
+
 								$log->debug("[$section] XMPP message recieved! \"". $pl["body"] ."\"");
+
+								// check gateway health - if unhealthy, we are not going to be able to send
+								if (!$gateway->health_check($force=true))
+								{
+									$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
+									break;
+								}
+
+
+								// TODO: input validation here!
+
+								// fetch number & message then send
+								if (preg_match("/^([+0-9]*)[:]*\s([\S\s]*)$/", $pl["body"], $matches))
+								{
+									$phone	= $matches[1];
+									$body	= $matches[2];
+
+									$gateway->message_send($phone, $body);
+
+									// save number as current chat destinatoin
+									$conn->message($config[$section]["xmpp_reciever"], $body="Chat target has changed, you are now talking to {$phone}, all unaddressed replies will go to this recipient.", $subject=$phone);
+									$current_chat = $phone;
+								}
+								else
+								{
+									if (!$current_chat)
+									{
+										$conn->message($pl["from"], $body="Unable to send - please specify destination phone number using syntax \"+XXXXXXX my message\"");
+									}
+									else
+									{
+										// we know the current chat name, so just send the string to them
+										$gateway->message_send($current_chat, $pl["body"]);
+									}
+								}
+								
+
+
 							break;
 						}
 					break;
@@ -564,7 +699,9 @@ foreach (array_keys($config) as $section)
 
 						// Online and Ready
 						$conn->getRoster();
-						$conn->presence($status="". APP_NAME ." connected to $section");
+
+						// Clear current healthcheck status to trigger presence notification
+						$current_status = null;
 
 						// allow any user to subscribe - but we validate that only certain users can message us
 						$conn->autoSubscribe(true);
@@ -649,7 +786,38 @@ foreach (array_keys($config) as $section)
 				}
 
 			} // end if available messages
-		}
+
+
+			/*
+				Health check the gateway
+
+				Note that we'll be hitting the function every second, but the gateway
+				code may make checks more infrequent than that to avoid excessive
+				polling.
+
+				We show the gateway health to the user via means of XMPP presence aka
+				status for the user.
+			*/
+
+			$status = null;
+
+			if ($gateway->health_check())
+			{
+				$status = "". APP_NAME ." connected to $section";
+			}
+			else
+			{
+				$status = "Unhealthy gateway device $section :-(";
+			}
+
+			if ($current_status != $status)
+			{
+				$conn->presence($status);
+				$current_status = $status;
+			}
+
+
+		} // end of loop
 
 
 		// terminate
@@ -684,6 +852,7 @@ pcntl_signal(SIGUSR1, "sig_handler_parent", false);
 
 pcntl_waitpid(-1,$status);
 
-// unexpected ending
+// unexpected ending - try a clean shutdown, otherwise fail with warning
+posix_kill($pid_parent, SIGTERM);
 die("Unexpected application ending");
 

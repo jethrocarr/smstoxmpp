@@ -232,7 +232,7 @@ class logger
 	function error_fatal($message)
 	{
 		$this->write("error", $message);
-		die("Fatal Error: $message");
+		die("Fatal Error: $message\n");
 	}
 
 }
