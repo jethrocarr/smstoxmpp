@@ -517,6 +517,10 @@ foreach (array_keys($config) as $section)
 
 		$gateway = New device_gateway;
 
+		if (!$gateway->set_path($config[$section]["gw_path"]))
+		{
+			$log->error("Invalid syntax for gw_path option! Please check your configuration");
+		}
 
 
 		/*
@@ -665,7 +669,15 @@ foreach (array_keys($config) as $section)
 									$phone	= $matches[1];
 									$body	= $matches[2];
 
-									$gateway->message_send($phone, $body);
+									if ($gateway->message_send($phone, $body))
+									{
+										$log->debug("[$section] Message delivered successfully");
+									}
+									else
+									{
+										$log->warning("[$section] Unable to deliver message from XMPP to gateway.");
+										$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
+									}
 
 									// save number as current chat destinatoin
 									$conn->message($config[$section]["xmpp_reciever"], $body="Chat target has changed, you are now talking to {$phone}, all unaddressed replies will go to this recipient.", $subject=$phone);
@@ -709,6 +721,12 @@ foreach (array_keys($config) as $section)
 						// send user a welcome
 						$conn->message($config[$section]["xmpp_reciever"], $body="". APP_NAME ." (". APP_VERSION .") started", $type="chat");
 						$conn->message($config[$section]["xmpp_reciever"], $body="Type \"help\" for usage and option information", $type="chat");
+
+						// note about dynamic/auto GW?
+						if ($config[$section]["gw_path"] == "auto" || $config[$section]["gw_path"] == "dynamic")
+						{
+							$conn->message($config[$section]["xmpp_reciever"], $body="Note: This gateway is configured to be discovered automatically - you will be unable to send SMS via XMPP until the gateway first sends a message through to XMPP and reveals it's address. You can avoid this behaviour by statically assigning the device IP and adding it to the configuration.");
+						}
 					break;
 
 					case 'end_stream':
@@ -735,9 +753,12 @@ foreach (array_keys($config) as $section)
 					/*
 						Recieved SMS message
 						array (
-							phone => "+120123456..."
-							body  => "just a string" 
-							time  => reserved for future use
+							phone		=> "+120123456..."
+							body		=> "just a string" 
+							time		=> reserved for future use
+							device_ip	=> IP device connected to listener on
+							device_port	=> undef, reserved for future GWs
+							device_url	=> undef, reserved for future GWs
 						)
 					*/
 
@@ -757,6 +778,22 @@ foreach (array_keys($config) as $section)
 					}
 
 					$conn->message($config[$section]["xmpp_reciever"], $body="{$message["phone"]}: {$message["body"]}", $subject=$message["phone"]);
+
+
+					/*
+						Do we need to use any of the extra info, such as IP?
+					*/
+
+					if ($config[$section]["gw_path"] == "auto" || $config[$section]["gw_path"] == "dynamic")
+					{
+						// we are using dynamic/auto configuration, we should set the IP of the gateway
+						// to the one provided.
+						$gateway->set_address($message["device_ip"]);
+
+						// force health check
+						$current_status = null;
+					}
+
 				}
 				
 				/*

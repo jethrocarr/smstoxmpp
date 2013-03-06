@@ -52,13 +52,59 @@ class device_gateway
 		Either called with the static IP/port from the configuration file, or
 		called by the application itself when we discover the current address.
 	*/
-	function set_address($address, $port)
+	function set_address($address, $port = "9090")
 	{
-		$this->address	= $address;
-		$this->port	= $port;
+		if ($this->address != $address)
+		{	
+			// address has changed, set
+			$this->address	= $address;
+			$this->port	= $port;
 
-		// reset the health check timer
-		$this->health_check_last = null;
+			// reset the health check timer
+			$this->health_check_last = null;
+
+			$this->log->info("[{$this->section}] Updated device address to {$this->address}:{$this->port}");
+		}
+	}
+
+
+	/*
+		set_path
+
+		Provided with the path from the configuration file, this function validates
+		the input and then calls set_address to save if it's static.
+
+		Returns
+		-1	Empty Path
+		0	Invalid Path
+		1	Address Set / Valid / Automatic
+	*/
+	function set_path($path)
+	{
+		if (empty($path))
+		{
+			return -1;
+		}
+
+		if ($path == "auto" && $path == "dynamic")
+		{
+			// dynamics can't be set, we must wait for the gateway
+			// to announce itself by sending us an SMS.
+			return 1;
+		}
+		else
+		{
+			// gateway device has a static path configured
+			list($address, $port) = explode(":", $path);
+
+			if (preg_match("/^[0-9]*$/", $port) && preg_match("/^\S*$/", $address))
+			{
+				$this->set_address($address, $port);
+				return 1;
+			}
+		}
+
+		return 0;
 	}
 
 
@@ -89,6 +135,22 @@ class device_gateway
 				$this->log->debug("[{$this->section}] Health check failed, gateway IP is unknown");
 				$this->health_check_state = 0;
 			}
+			else
+			{
+				// test if we can open the port within 15 seconds
+				if ($fp = @fsockopen($this->address, $this->port, $errno, $errstr, 15))
+				{
+					fclose($fp);
+
+					$this->log->debug("[{$this->section}] Health check succeeded in opening port. :-)");
+					$this->health_check_state = 1;
+				}
+				else
+				{
+					$this->log->debug("[{$this->section}] Health check failed, unable to connect to IP/port.");
+					$this->health_check_state = 0;
+				}
+			}
 		}
 
 		return $this->health_check_state;
@@ -109,7 +171,20 @@ class device_gateway
 
 	function message_listen()
 	{
-		
+		// we don't do input validation here, it's done in a standard way
+		// with the main listener logic
+	
+		$message = array();
+
+		$message["phone"]	= $_GET["phone"];
+		$message["body"]	= $_GET["text"];
+
+		if (!$message["phone"] || !$message["body"])
+		{
+			return 0;
+		}
+
+		return $message;
 	}
 
 
@@ -121,11 +196,26 @@ class device_gateway
 		an error so the user can be notified.
 
 		TODO: should we implement some form of queuing here for future use?
+
+		Returns
+		0	Failure
+		1	Success
 	*/
 	function message_send($phone, $body)
 	{
 		$this->log->debug("[{$this->section}] Sending message to \"$phone\" contents: \"$body\"");
 
+		// ensure that data is SMS & HTTP GET safe
+		$phone	= urlencode($phone);
+		$body	= urlencode($body);
+
+		// don't need to do anything too complex with HTTP, etc... just open up and shove it some data
+		if (@file_get_contents("http://{$this->address}:{$this->port}/sendsms?phone=$phone&text=$body"))
+		{
+			return 1;
+		}
+
+		return 0;
 	}
 }
 
