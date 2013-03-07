@@ -33,7 +33,7 @@ class device_gateway
 
 	var $health_check_last	= null;	 // time of the last health check
 	var $health_check_state	= null;	 // last check status
-	var $health_check_freq	= '300'; // perform a health check every x seconds.
+	var $health_check_freq	= HEALTH_CHECK_FREQUENCY; // perform a health check every x seconds.
 
 
 	function __construct()
@@ -137,8 +137,8 @@ class device_gateway
 			}
 			else
 			{
-				// test if we can open the port within 15 seconds
-				if ($fp = @fsockopen($this->address, $this->port, $errno, $errstr, 15))
+				// test if we can open the port within X seconds
+				if ($fp = @fsockopen($this->address, $this->port, $errno, $errstr, HEALTH_CHECK_TIMEOUT))
 				{
 					fclose($fp);
 

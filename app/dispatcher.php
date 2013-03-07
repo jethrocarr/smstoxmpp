@@ -19,9 +19,11 @@
 */
 
 // external libraries
-include 'XMPPHP/XMPP.php';
+include 'include/external/XMPPHP/XMPP.php';
+include 'include/external/CardDAV-PHP/carddav.php';
+include 'include/external/CardDAV-PHP/support.php';
 
-// internal libraries
+// internal libraries used by all forks
 include 'include/defines.php';
 include 'include/logger.php';
 
@@ -51,6 +53,7 @@ function sig_handler_parent($signo)
 	global $log;
 	global $fork_pids;
 	global $pid_logger;
+	global $pid_contacts;
 	global $msg_queue;
 	global $config;
 
@@ -85,9 +88,17 @@ function sig_handler_parent($signo)
 		$log->debug("[master] Peak memory usage of ". memory_get_peak_usage() ." bytes");
 		$log->info("[master] Clean Shutdown");
 
+		// send shutdown to contacts fork
+		if (!empty($pid_contacts))
+		{
+			posix_kill($pid_contacts, SIGTERM);
+			pcntl_waitpid($pid_contacts, $status, WUNTRACED);
+		}
+
 		// send shutdown to logger fork
 		posix_kill($pid_logger, SIGTERM);
 		pcntl_waitpid($pid_logger, $status, WUNTRACED);
+
 
 		// remove message queue
 		msg_remove_queue($msg_queue);
@@ -104,7 +115,12 @@ function sig_handler_parent($signo)
 
 function sig_handler_child($signo)
 {
+	global $log;
 	global $pid_parent;
+	global $pid_child;
+
+	$log->debug("[child $pid_child] Peak memory usage of ". memory_get_peak_usage() ." bytes");
+	$log->debug("[child $pid_child] Terminating child support process & parent");
 
 	if ($signo == SIGTERM || $signo == SIGHUP)
 	{
@@ -245,7 +261,7 @@ else
 {
 	$currdir = realpath(dirname(__FILE__));
 
-	$options_set["config_file"] = "$currdir/config/sample_config.ini";
+	$options_set["config_file"] = "$currdir/config/config.ini";
 }
 
 if (!file_exists($options_set["config_file"]))
@@ -373,6 +389,8 @@ if (!$pid_logger)
 		All other processes including the master send their logs via IPC to the logger fork.
 	*/
 
+	$pid_child = getmypid();
+
 	$log = New logger();
 
 	$log->set_queue_listener(&$msg_queue, MESSAGE_LOG, MESSAGE_MAX_SIZE);
@@ -388,6 +406,7 @@ if (!$pid_logger)
 	}
 
 	$log->debug("Launched logger fork");
+	$log->debug("[child $pid_child] is logging worker ");
 
 
 	// handle posix signals in a sane way
@@ -436,9 +455,317 @@ $log->info("[master] Launched ". APP_NAME ." (". APP_VERSION .")");
 
 
 
+/*
+	Launch contacts lookup worker fork
 
-// spawn one fork per device
-// these forks loop until application termination
+	If enabled, we launch a seporate fork which looks up (and caches) address
+	book look ups for all device worker forks.
+
+	In the backend, this fork uses CardDAV which has numerious server
+	implementations including Google Contacts which is built into Android.
+*/
+
+if ($config["SMStoXMPP"]["contacts_lookup"] == true)
+{
+	$pid_contacts = pcntl_fork();
+
+	if (!$pid_contacts)
+	{
+		/*
+			We are the fork!
+			* Validate configuration provided
+			* Establish a connection to the CardDAV backend
+			* Listen on the message queue for incomming contact lookup requests
+			* Pull contact name from CardDAV
+			* Save into cache (just an array) for next time.
+		*/
+
+		$pid_child = getmypid();
+
+		$log->info("[contacts] Launched CardDAV contacts/address book lookup worker fork");
+		$log->debug("[child $pid_child] is contacts worker ");
+
+		// verify installed modules
+		if (!class_exists('XMLWriter'))
+		{
+			$log->error_fatal("PHP XMLWriter module must be installed to enable CardDAV functionality");
+		}
+
+		// verify configuration
+		if (!$config["SMStoXMPP"]["contacts_url"])
+		{
+			$log->error_fatal("[contacts] No contacts_url provided to query for CardDAV contacts.");
+		}
+
+		if (!$config["SMStoXMPP"]["contacts_store"])
+		{
+			$log->error_fatal("[contacts] No contacts_store provided to store downloaded contacts to avoid large re-syncs");
+		}
+		else
+		{
+			if (!file_exists($config["SMStoXMPP"]["contacts_store"]))
+			{
+				$log->error_fatal("[contacts] Contacts storeectory ({$config["SMStoXMPP"]["contacts_store"]}) does not exist");
+			}
+
+			if (!is_writable($config["SMStoXMPP"]["contacts_store"]))
+			{
+				$log->error_fatal("[contacts] Contacts storeectory ({$config["SMStoXMPP"]["contacts_store"]}) is not writable");
+			}
+		}
+
+
+		// connect to CardDAV
+		$carddav = new carddav_backend($config["SMStoXMPP"]["contacts_url"]);
+		$carddav->set_auth($config["SMStoXMPP"]["contacts_username"], $config["SMStoXMPP"]["contacts_password"]);
+
+		// handle posix signals in a sane way
+		pcntl_signal(SIGTERM, "sig_handler_child", false);
+		pcntl_signal(SIGHUP,  "sig_handler_child", false);
+		pcntl_signal(SIGINT, "sig_handler_child", false);
+		pcntl_signal(SIGUSR1, "sig_handler_child", false);
+	
+
+		// we set the rescan option here, and do the actual CardDAV download
+		// and sync inside the loop - this allows us to schedule automatic
+		// rechecks
+		$address_rescan = true;
+		
+
+		// store address to contact mapping in memory
+		$address_map = array();
+
+		// background worker loop
+		while (true)
+		{
+			if ($address_rescan == true)
+			{
+				/*
+					Sync CardDAV Addresses
+
+					We don't want to be hitting the CardDAV server with every single
+					lookup request, so we first fetch a lightweight list of contacts
+					and times modified, then we download any CardDAV Vcards we don't
+					have, or which has been updated.
+
+					Once we have the Vcards, we save them to disk as a file per VCard
+					which we can then search through when a lookup is required.
+
+					We cache the lookup results in memory for the running session
+					to avoid too many file searches.
+				*/
+
+
+				// download the list of address book objects
+				// (we just grab the IDs and date modified here)
+				try {
+					$address_list_xml = $carddav->get(false, false);
+				}
+				catch (Exception $e)
+				{
+					$log->error("[contacts] Error from CardDAV: {$e->getMessage()}");
+					$log->error_fatal("[contacts] A fatal error occured whilst attempting to fetch contacts from CardDAV server");
+				}
+
+				$address_list_array	= xmlstr_to_array($address_list_xml);
+				$address_list_update	= array();
+
+
+				// run through the list and see which ones need updating
+				foreach ($address_list_array["element"] as $address_list_entry)
+				{
+					$timestamp = null;
+
+					if (preg_match("/^([0-9]*)-([0-9]*)-([0-9]*)T([0-9]*):([0-9]*):([0-9]*)/", $address_list_entry["etag"], $matches))
+					{
+						$timestamp = mktime($matches[4], $matches[5], $matches[6], $matches[2], $matches[3], $matches[1]);
+					}
+
+					$filename = $config["SMStoXMPP"]["contacts_store"] ."/". $address_list_entry["id"] .".vcf";
+
+					if (file_exists($filename))
+					{
+						if (filemtime($filename) < $timestamp)
+						{
+							$log->debug("[contacts] VCard $filename is outdated and the latest VCard needs to be fetched");
+							$address_list_update[] = $address_list_entry["id"];
+						}
+					}
+					else
+					{
+						$log->debug("[contacts] VCard $filename is not on disk and needs fetching");
+						$address_list_update[] = $address_list_entry["id"];
+					}
+				}
+
+
+				$address_list_total_all		= count(array_keys($address_list_array["element"]));
+				$address_list_total_update	= count($address_list_update);
+
+				unset($address_list_xml);
+				unset($address_list_array);
+
+				$log->info("[contacts] Total of {$address_list_total_all} contacts, need to update/fetch {$address_list_total_update} of them");
+
+
+				/*
+					Fetch any new contacts
+				*/
+				if (!empty($address_list_update))
+				{
+					$i=0;
+
+					foreach ($address_list_update as $id)
+					{
+						$i++;
+						$log->info("[contacts] Fetching contact $id ($i/{$address_list_total_all})");
+
+						// download vcard to offline space. We use touch to set the mtime of the file
+						// so that we can check if it's changed without re-downloading
+
+						if (!$vcard = $carddav->get_vcard($id))
+						{
+							$log->error("[contacts] Error reading contact $id, skipping");
+						}
+						else
+						{
+							$vcard_array	= split("\r\n", $vcard);
+							$timestamp	= null;
+							$name		= null;
+
+							foreach ($vcard_array as $line)
+							{
+								if (preg_match("/^REV:([0-9]*)-([0-9]*)-([0-9]*)T([0-9]*):([0-9]*):([0-9]*)/", $line, $matches))
+								{
+									$timestamp = mktime($matches[4], $matches[5], $matches[6], $matches[2], $matches[3], $matches[1]);
+								}
+								
+								if (preg_match("/^FN:([\S\s]*)/", $line, $matches))
+								{
+									$name = $matches[1];
+								}
+							}
+
+							$log->debug("[contacts] Downloaded Vcard for $name");
+							$log->debug("[contacts] Last modified at $timestamp");
+				
+							$filename = $config["SMStoXMPP"]["contacts_store"] ."/$id.vcf";
+
+							if (!file_put_contents($filename, $vcard))
+							{
+								$log->error("[contacts] Unable to write vcard $id to disk");
+							}
+							else
+							{
+								// set modified time, so we know whether our offline cache
+								// is up to date or not
+								touch($filename, $timestamp);
+							}
+
+						}
+
+					} // end for each contact
+
+					// completed sync :-)
+					$log->info("[contacts] CardDAV Synchronisation Completed");
+					unset($address_list_update);
+
+				} // end if contacts to update
+			
+
+				/*
+					Read all the files on disk into memory
+				*/
+
+				$log->info("[contacts] Scanning Vcard files from disk for contact numbers");
+				$address_map = array();
+				
+				foreach (glob($config["SMStoXMPP"]["contacts_store"] ."/*.vcf") as $filename)
+				{
+					if ($contents = @file_get_contents($filename))
+					{
+						$vcard_array	= split("\r\n", $contents);
+						$name		= null;
+
+						// We care about two types of line:
+						// FN:John Doe
+						// TEL;TYPE=WORK:+12123456
+						//
+						// These can annoying be in any order, hence the double foreach
+						//
+
+						foreach ($vcard_array as $line)
+						{
+							if (preg_match("/^FN:([\S\s]*)/", $line, $matches))
+							{
+								$name = $matches[1];
+							}
+						}
+
+						if ($name)
+						{
+							foreach ($vcard_array as $line)
+							{
+								if (preg_match("/^TEL;(\S*?):(\S*)$/", $line, $matches))
+								{
+									$options = $matches[1];
+									$number  = $matches[2];
+
+									$address_map[ $number ]["name"] = $name;
+
+									// see if we can get the type of device
+									// (eg cell/work/home)
+									if (preg_match("/TYPE=(\w*)/", $options, $matches))
+									{
+										$address_map[ $number ]["type"] = $matches[1];
+									}
+								}
+							}
+						}
+						else
+						{
+							$log->debug("[contacts] No FD/name record in $filename, skipping");
+						}
+					}
+
+				} // end of reading all files from disk
+
+				// complete
+				$log->info("[contacts] Scan completed, all contact numbers now in memory");
+				$address_rescan = false;
+
+				print_r($address_map);
+
+			} // end of CardDAV Sync
+
+
+			/*
+				Ready to process addressbook lookups
+
+				XMPP workers can request adddressbook lookups for incoming numbers (fast)
+				or request numbers for a particular name search.
+			*/
+
+			// TODO write me
+			print "[contacts] contacts worker ready....\n";
+			sleep(10);
+		}
+
+		// terminate
+		// in reality, we will never get here - SIGTERM will kill
+		// the above block and then just stop this fork & GC.
+		exit();
+	}
+}
+
+
+
+/*
+	Launch per-device workers
+
+	We fork the application once per device, which each fork handling
+	both the XMPP and message queues for sending and recieving SMS messages.
+*/
 
 $fork_pids = array();
 
@@ -456,7 +783,7 @@ foreach (array_keys($config) as $section)
 	if (!$fork_pids[$i])
 	{
 		// we are the child
-		$log->debug("Child process launched for device \"$section\"\n");
+		$log->debug("Worker/child process launched for device \"$section\"");
 
 
 		/*
@@ -727,6 +1054,9 @@ foreach (array_keys($config) as $section)
 						{
 							$conn->message($config[$section]["xmpp_reciever"], $body="Note: This gateway is configured to be discovered automatically - you will be unable to send SMS via XMPP until the gateway first sends a message through to XMPP and reveals it's address. You can avoid this behaviour by statically assigning the device IP and adding it to the configuration.");
 						}
+
+						// ready
+						$log->info("[$section] Ready to process messages");
 					break;
 
 					case 'end_stream':

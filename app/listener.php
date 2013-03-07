@@ -28,7 +28,7 @@ include 'include/logger.php';
 */
 
 // load config file
-$config = parse_ini_file("config/sample_config.ini", true);
+$config = parse_ini_file("config/config.ini", true);
 
 // verify message queue is up and running
 if (!file_exists($config["SMStoXMPP"]["app_lock"]))
