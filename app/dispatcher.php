@@ -748,7 +748,28 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 
 			// TODO write me
 			print "[contacts] contacts worker ready....\n";
-			sleep(10);
+			
+			$message = null;
+			$message_type = null;
+
+			msg_receive($msg_queue, MESSAGE_CONTACTS_REQ, $message_type, MESSAGE_MAX_SIZE, $message, TRUE);
+			$log->debug("[contacts] Lookup request for {$message["phone"]}");
+
+
+			$request = array();
+			if (isset($address_map[ $message["phone"] ]))
+			{
+				$request["name"] = $address_map[ $message["phone"] ]["name"];
+				$request["type"] = $address_map[ $message["phone"] ]["type"];
+				
+				$log->debug("[contacts] Phone number resolved to {$request["name"]}");
+			}
+			else
+			{
+				$log->debug("[contacts] Unknown phone number");
+			}
+
+			msg_send($msg_queue, (MESSAGE_CONTACTS_ASR + $message["workerpid"]), $request);
 		}
 
 		// terminate
@@ -901,10 +922,10 @@ foreach (array_keys($config) as $section)
 						// process message
 						switch ($pl["body"])
 						{
-							case "help":
-							case "about":
-							case "license":
-							case "version":
+							case "_help":
+							case "_about":
+							case "_license":
+							case "_version":
 								/*
 									User help & application status
 								*/
@@ -913,25 +934,17 @@ foreach (array_keys($config) as $section)
 
 								$help[] = "". APP_NAME ." (". APP_VERSION .")";
 								
-								if ($pl["body"] == "help")
+								if ($pl["body"] == "_help")
 								{
 									$help[] = " ";
-									$help[] = "GENERAL USE:";
-									$help[] = "---";
-									$help[] = "To open a new chat, prefix the message with the destination phone number, eg:";
-									$help[] = "+121234567 example message";
-									$help[] = "or";
-									$help[] = "123456 example message";
+									$help[] = "Available Commands:";
 									$help[] = " ";
-									$help[] = "Once a chat is open (by yourself or by an incomming message) any replies without a prefix number will go to the current active chat recipient automatically.";
-									$help[] = " ";
-									$help[] = " ";
-									$help[] = "Special Commands";
-									$help[] = "---";
-									$help[] = " ";
-									$help[] = "help\tThis help message";
-									$help[] = "version\tApplication & platform version information.";
-									$help[] = "health_check\tPerform an instant check of the gateway device status.";
+									$help[] = "_chat NAME|NUMBER\tOpen an SMS conversation to a person or phone number";
+									$help[] = "_find NAME\tSearch the address book for a name (use * to list all)";
+									$help[] = "_help\tThis help message";
+									$help[] = "_usage\tExamples of command usage";
+									$help[] = "_version\tApplication & platform version information.";
+									$help[] = "_health_check\tPerform an instant check of the gateway device status.";
 									$help[] = " ";
 								}
 
@@ -945,7 +958,30 @@ foreach (array_keys($config) as $section)
 								}
 							break;
 
-							case "health_check":
+							case "_usage":
+								$help = array();
+
+								$help[] = " ";
+								$help[] = "Application Usage:";
+								$help[] = "---";
+								$help[] = "To open a new chat, prefix the message with the destination phone number, eg:";
+								$help[] = "+121234567 example message";
+								$help[] = "Or use _chat to select the number or person to chat to, and then type messages without needing to prefix";
+								$help[] = "_chat +121234567";
+								$help[] = "_chat example contact";
+								$help[] = "example message";
+								$help[] = " ";
+								$help[] = "Once a chat is open (by yourself or by an incomming message) any replies without a prefix number will go to the current active chat recipient automatically.";
+								$help[] = " ";
+
+								foreach ($help as $body)
+								{
+									$conn->message($pl["from"], $body);
+								}
+
+							break;
+
+							case "_health_check":
 								/*
 									Force a health check
 								*/
@@ -986,6 +1022,8 @@ foreach (array_keys($config) as $section)
 									$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
 									break;
 								}
+
+								// TODO: address book lookup logic here
 
 
 								// TODO: input validation here!
@@ -1047,7 +1085,7 @@ foreach (array_keys($config) as $section)
 
 						// send user a welcome
 						$conn->message($config[$section]["xmpp_reciever"], $body="". APP_NAME ." (". APP_VERSION .") started", $type="chat");
-						$conn->message($config[$section]["xmpp_reciever"], $body="Type \"help\" for usage and option information", $type="chat");
+						$conn->message($config[$section]["xmpp_reciever"], $body="Type \"_help\" for usage and option information", $type="chat");
 
 						// note about dynamic/auto GW?
 						if ($config[$section]["gw_path"] == "auto" || $config[$section]["gw_path"] == "dynamic")
@@ -1094,6 +1132,45 @@ foreach (array_keys($config) as $section)
 
 					$log->debug("[$section] Recieved SMS message from {$message["phone"]} with content of {$message["body"]}");
 
+
+					/*
+						Lookup the name of the contact for the recieved message, if contact
+						lookups are handled.
+					*/
+
+					$message["phone_human"] = $message["phone"];
+
+					if ($pid_contacts)
+					{
+						// we give the contacts worker our PID, so it can reply to us specifically
+						$request = array();
+						$request["workerpid"]	= getmypid();
+						$request["phone"]	= $message["phone"];
+
+						msg_send($msg_queue, MESSAGE_CONTACTS_REQ, $request);
+
+						// this is hacky, we wait 0.1 seconds for a response, ideally need a blocking request
+						// here, but there's no native support for it.... so would have to do nasty tricks
+						// like timer loops and checks. :-/
+						usleep(100000);
+
+						$address_lookup_type = null;
+						$address_lookup = null;
+
+						if (msg_receive($msg_queue, (MESSAGE_CONTACTS_ASR + $request["workerpid"]), $address_lookup_type, MESSAGE_MAX_SIZE, $address_lookup, TRUE, MSG_IPC_NOWAIT))
+						{
+							if (!empty($address_lookup))
+							{
+								$message["phone_human"] = $address_lookup["name"] ." (". $address_lookup["type"] .")";
+							}
+						}
+					}
+
+
+					/*
+						Switch focus of conversation
+					*/
+
 					if (!$current_chat)
 					{
 						$current_chat = $message["phone"];
@@ -1102,12 +1179,12 @@ foreach (array_keys($config) as $section)
 					{
 						if ($current_chat != $message["phone"])
 						{
-							$conn->message($config[$section]["xmpp_reciever"], $body="Chat target has changed, you are now talking to {$message["phone"]}, all unaddressed replies will go to this recipient.", $subject=$message["phone"]);
+							$conn->message($config[$section]["xmpp_reciever"], $body="Chat target has changed, you are now talking to {$message["phone_human"]}, all unaddressed replies will go to this recipient.", $subject=$message["phone_human"]);
 							$current_chat = $message["phone"];
 						}
 					}
 
-					$conn->message($config[$section]["xmpp_reciever"], $body="{$message["phone"]}: {$message["body"]}", $subject=$message["phone"]);
+					$conn->message($config[$section]["xmpp_reciever"], $body="{$message["phone_human"]}: {$message["body"]}", $subject=$message["phone_human"]);
 
 
 					/*
