@@ -1,9 +1,9 @@
 Summary: A daemon to exchange messages between SMS gateway devices and XMPP
 Name: smstoxmpp
 Version: 0.0.1
-Release: 1%{dist}
+Release: 2%{dist}
 License: AGPLv3
-URL: http://www.amberdms.com/smstoxmpp
+URL: http://projects.jethrocarr.com/p/oss-smstoxmpp
 Group: Applications/Internet
 Source0: smstoxmpp-%{version}.tar.bz2
 
@@ -44,10 +44,12 @@ mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf.d
 install -m 644 resources/smstoxmpp-httpdconfig.conf $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf.d/smstoxmpp.conf
 
 # symlink the daemon
-ln -s $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/app/dispatcher.php $RPM_BUILD_ROOT%{_bindir}/smstoxmppd
+mkdir -p $RPM_BUILD_ROOT%{_bindir}/
+ln -s %{_datadir}/smstoxmpp/app/dispatcher.php $RPM_BUILD_ROOT%{_bindir}/smstoxmppd
 
 # install the daemon bootscript
 mkdir -p $RPM_BUILD_ROOT/etc/init.d/
+mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/smstoxmpp
 install -m 755 resources/smstoxmppd.rcsysinit $RPM_BUILD_ROOT/etc/init.d/smstoxmppd
 
 
@@ -64,7 +66,7 @@ then
 	/etc/init.d/smstoxmppd restart
 fi
 
-%preun bind
+%preun
 
 # stop running process
 /etc/init.d/smstoxmppd stop
@@ -81,9 +83,10 @@ rm -rf $RPM_BUILD_ROOT
 %attr(660,root,apache) %config(noreplace) %{_sysconfdir}/httpd/conf.d/smstoxmpp.conf
 %{_datadir}/smstoxmpp/app
 %{_datadir}/smstoxmpp/resources
-%{_bindir}/smstoxmpd
+%{_datadir}/smstoxmpp/docs/
+%{_bindir}/smstoxmppd
 /etc/init.d/smstoxmppd
-
+%{_localstatedir}/smstoxmpp
 %docdir %{_datadir}/smstoxmpp/docs/
 
 
