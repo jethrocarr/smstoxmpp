@@ -2,6 +2,7 @@
 <?php
 /*
 	SMStoXMPP :: Dispatcher
+	http://projects.jethrocarr.com/p/SMStoXMPP
 
 	Main application daemon, responsible for the following core functions:
 	- Establishes and listens to a message queue
@@ -14,8 +15,11 @@
 	There are also some optional functions this application is responsible for:
 	- Resolution of phone numbers against CardDAV directories (TODO)
 
-	Copyright 2013 Jethro Carr <jethro.carr@jethrocarr.com>
-	Licensed under the GNU AGPL license.
+
+	(c) Copyright 2013 Jethro Carr <jethro.carr@jethrocarr.com>
+
+	Unless otherwise stated, all parts of this program are licensed under
+	the GNU AGPL software license version 3 only as detailed in docs/COPYING
 */
 
 // external libraries

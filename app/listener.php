@@ -11,8 +11,11 @@
 	This one file supports multiple device gateway types and detects the
 	type of request being made into it.
 
-	Copyright 2013 Jethro Carr
-	Licensed under the GNU AGPL license.
+
+	(c) Copyright 2013 Jethro Carr <jethro.carr@jethrocarr.com>
+
+	Unless otherwise stated, all parts of this program are licensed under
+	the GNU AGPL software license version 3 only as detailed in docs/COPYING
 */
 
 // internal libraries

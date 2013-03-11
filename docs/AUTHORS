@@ -1,4 +1,18 @@
-AUTHORS
--------
+SMStoXMPP Authors
+-----------------
 Jethro Carr <jethro.carr@jethrocarr.com>
+
+
+Bundled Libraries
+(app/include/external/*)
+-----------------
+
+XMPP PHP Library:
+ Nathanael C. Fritz <fritzy@netflint.net>
+ Stephan Wentz <stephan@jabber.wentz.it>
+ Michael Garvin <gar@netflint.net>
+
+CardDAV PHP Library
+ Christian Putzke <christian.putzke@graviox.de>
+
 
