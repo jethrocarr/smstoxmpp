@@ -509,12 +509,16 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 		{
 			if (!file_exists($config["SMStoXMPP"]["contacts_store"]))
 			{
-				$log->error_fatal("[contacts] Contacts storeectory ({$config["SMStoXMPP"]["contacts_store"]}) does not exist");
+				// attempt to create the directory, we may just be missing the top level dir and have rights to create
+				if (!@mkdir($config["SMStoXMPP"]["contacts_store"], 0770))
+				{
+					$log->error_fatal("[contacts] Contacts store directory ({$config["SMStoXMPP"]["contacts_store"]}) does not exist");
+				}
 			}
 
 			if (!is_writable($config["SMStoXMPP"]["contacts_store"]))
 			{
-				$log->error_fatal("[contacts] Contacts storeectory ({$config["SMStoXMPP"]["contacts_store"]}) is not writable");
+				$log->error_fatal("[contacts] Contacts store directory ({$config["SMStoXMPP"]["contacts_store"]}) is not writable");
 			}
 		}
 
@@ -925,7 +929,7 @@ foreach (array_keys($config) as $section)
 			$log->error_fatal("There is no gateway set! Unable to proceed!");
 		}
 
-		$gatewayfile = "include/gateways/". $config[$section]["gw_type"] .".php";
+		$gatewayfile = realpath(dirname(__FILE__)) ."/include/gateways/". $config[$section]["gw_type"] .".php";
 
 		if (!file_exists($gatewayfile))
 		{
