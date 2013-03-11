@@ -1,0 +1,57 @@
+#!/bin/sh
+#
+# smstoxmppd	Daemon that delivers messages between SMS gateways and XMPP
+#
+# chkconfig:	2345 87 9
+# description:	smstoxmppd SMStoXMPP message delivery daemon
+#
+
+PROG=/usr/bin/smstoxmppd
+CONFIG=/etc/smstoxmpp/config.ini
+ARGS="-D -c $CONFIG"
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+
+start()
+{
+	echo -n $"Starting smstoxmppd:"
+	daemon $PROG $ARGS
+	RETVAL=$?
+	echo ""
+	return $RETVAL
+}
+
+stop()
+{
+	echo -n "Stopping smstoxmppd:"
+	killproc $PROG
+	RETVAL=$?
+	echo ""
+	return $RETVAL
+}
+
+case "$1" in
+  start)
+	start
+	;;
+  stop)
+	stop
+	;;
+  restart|reload)
+        stop
+        start
+        ;;
+  status)
+	status smstoxmppd
+        ;;
+  *)
+        echo $"Usage: $0 {start|stop|status|restart}"
+        exit 1
+	;;
+esac
+
+exit 0
+
+

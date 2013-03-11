@@ -1,6 +1,6 @@
-Summary: A web-based management system for DNS, consisting of a PHP web interface and some PHP CLI components to hook into FreeRadius.
+Summary: A daemon to exchange messages between SMS gateway devices and XMPP
 Name: smstoxmpp
-Version: 1.5.1
+Version: 0.0.1
 Release: 1%{dist}
 License: AGPLv3
 URL: http://www.amberdms.com/smstoxmpp
@@ -11,33 +11,13 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 BuildArch: noarch
 BuildRequires: gettext
 
+Requires: httpd
+Requires: php >= 5.3.0, php-xml, php-cli, php-process
+
+
 %description
-smstoxmpp is a web-based interface for viewing and managing DNS zones stored inside a database and generating configuration files from that.
-
-
-%package www
-Summary: smstoxmpp web-based interface and API components
-Group: Applications/Internet
-
-Requires: httpd, mod_ssl
-Requires: php >= 5.3.0, mysql-server, php-mysql, php-ldap, php-soap
-Requires: perl, perl-DBD-MySQL
-Prereq: httpd, php, mysql-server, php-mysql
-
-%description www
-Provides the smstoxmpp web-based interface and SOAP API.
-
-
-%package bind
-Summary:  Integration components for Bind nameservers.
-Group: Applications/Internet
-
-Requires: php-cli >= 5.3.0, php-soap, php-process
-Requires: perl, perl-DBD-MySQL
-Requires: bind
-
-%description bind
-Provides applications for integrating with Bind nameservers and generating text-based configuration files from the API.
+SMStoXMPP is a daemon which provides a gateway for exchange messages between
+SMS gateways and XMPP accounts.
 
 
 %prep
@@ -56,169 +36,58 @@ cp -pr * $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/
 
 
 # install configuration file
-install -m0700 htdocs/include/sample-config.php $RPM_BUILD_ROOT%{_sysconfdir}/smstoxmpp/config.php
-ln -s %{_sysconfdir}/smstoxmpp/config.php $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/htdocs/include/config-settings.php
-
-# install linking config file
-install -m755 htdocs/include/config.php $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/htdocs/include/config.php
-
-
-# install configuration file
-install -m0700 bind/include/sample-config.php $RPM_BUILD_ROOT%{_sysconfdir}/smstoxmpp/config-bind.php
-ln -s %{_sysconfdir}/smstoxmpp/config-bind.php $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/bind/include/config-settings.php
-
-# install linking config file
-install -m755 bind/include/config.php $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/bind/include/config.php
-
-
+install -m0700 app/config/sample_config.ini $RPM_BUILD_ROOT%{_sysconfdir}/smstoxmpp/config.ini
+ln -s %{_sysconfdir}/smstoxmpp/config.ini $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/app/config/config.ini
 
 # install the apache configuration file
 mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf.d
 install -m 644 resources/smstoxmpp-httpdconfig.conf $RPM_BUILD_ROOT%{_sysconfdir}/httpd/conf.d/smstoxmpp.conf
 
-# install the logpush bootscript
+# symlink the daemon
+ln -s $RPM_BUILD_ROOT%{_datadir}/smstoxmpp/app/dispatcher.php $RPM_BUILD_ROOT%{_bindir}/smstoxmppd
+
+# install the daemon bootscript
 mkdir -p $RPM_BUILD_ROOT/etc/init.d/
-install -m 755 resources/smstoxmpp_logpush.rcsysinit $RPM_BUILD_ROOT/etc/init.d/smstoxmpp_logpush
+install -m 755 resources/smstoxmppd.rcsysinit $RPM_BUILD_ROOT/etc/init.d/smstoxmppd
 
-# install the cronfile
-mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/cron.d/
-install -m 644 resources/smstoxmpp-bind.cron $RPM_BUILD_ROOT%{_sysconfdir}/cron.d/smstoxmpp-bind
 
-# placeholder configuration file
-touch $RPM_BUILD_ROOT%{_sysconfdir}/named.smstoxmpp.conf
-
-%post www
+%post
 
 # Reload apache
 echo "Reloading httpd..."
 /etc/init.d/httpd reload
 
-# update/install the MySQL DB
-if [ $1 == 1 ];
-then
-	# install - requires manual user MySQL setup
-	echo "Run cd %{_datadir}/smstoxmpp/resources/; ./autoinstall.pl to install the SQL database."
-else
-	# upgrade - we can do it all automatically! :-)
-	echo "Automatically upgrading the MySQL database..."
-	%{_datadir}/smstoxmpp/resources/schema_update.pl --schema=%{_datadir}/smstoxmpp/sql/ -v
-fi
-
-
-
-%post bind
-
 if [ $1 == 0 ];
 then
 	# upgrading existing rpm
-	echo "Restarting logging process..."
-	/etc/init.d/smstoxmpp_logpush restart
+	echo "Restarting daemon process..."
+	/etc/init.d/smstoxmppd restart
 fi
-
-
-if [ $1 == 1 ];
-then
-	# instract about named
-	echo ""
-	echo "BIND/NAMED CONFIGURATION"
-	echo ""
-	echo "SMStoXMPP BIND components have been installed, you will need to install"
-	echo "and configure bind/named to use the configuration file by adding the"
-	echo "following to /etc/named.conf:"
-	echo ""
-	echo "#"
-	echo "# Include SMStoXMPP Configuration"
-	echo "#"
-	echo ""
-	echo "include \"/etc/named.smstoxmpp.conf\";"
-	echo ""
-
-	# instruct about config file
-	echo ""
-	echo "SMStoXMPP BIND CONFIGURATION"
-	echo ""
-	echo "You need to set the application configuration in %{_sysconfdir}/smstoxmpp/config-bind.php"
-	echo ""
-fi
-
-
-%postun www
-
-# check if this is being removed for good, or just so that an
-# upgrade can install.
-if [ $1 == 0 ];
-then
-	# user needs to remove DB
-	echo "SMStoXMPP has been removed, but the MySQL database and user will need to be removed manually."
-fi
-
 
 %preun bind
 
 # stop running process
-/etc/init.d/smstoxmpp_logpush stop
+/etc/init.d/smstoxmppd stop
 
 
 
 %clean
 rm -rf $RPM_BUILD_ROOT
 
-%files www
+%files
 %defattr(-,root,root)
 %config %dir %{_sysconfdir}/smstoxmpp
-%attr(770,root,apache) %config(noreplace) %{_sysconfdir}/smstoxmpp/config.php
+%attr(770,root,apache) %config(noreplace) %{_sysconfdir}/smstoxmpp/config.ini
 %attr(660,root,apache) %config(noreplace) %{_sysconfdir}/httpd/conf.d/smstoxmpp.conf
-%{_datadir}/smstoxmpp/htdocs
+%{_datadir}/smstoxmpp/app
 %{_datadir}/smstoxmpp/resources
-%{_datadir}/smstoxmpp/sql
+%{_bindir}/smstoxmpd
+/etc/init.d/smstoxmppd
 
-%doc %{_datadir}/smstoxmpp/README
-%doc %{_datadir}/smstoxmpp/docs/AUTHORS
-%doc %{_datadir}/smstoxmpp/docs/CONTRIBUTORS
-%doc %{_datadir}/smstoxmpp/docs/COPYING
-
-
-%files bind
-%defattr(-,root,root)
-%config %dir %{_sysconfdir}/smstoxmpp
-%config %dir %{_sysconfdir}/cron.d/smstoxmpp-bind
-%config(noreplace) %{_sysconfdir}/named.smstoxmpp.conf
-%config(noreplace) %{_sysconfdir}/smstoxmpp/config-bind.php
-%{_datadir}/smstoxmpp/bind
-/etc/init.d/smstoxmpp_logpush
+%docdir %{_datadir}/smstoxmpp/docs/
 
 
 %changelog
-* Fri Feb 15 2013 Jethro Carr <jethro.carr@amberdms.com> 1.5.1
-- Released version 1.5.1 [stable] [bugfixes]
-* Sun Dec  9 2012 Jethro Carr <jethro.carr@amberdms.com> 1.5.0
-- Released version 1.5.0 [stable]
-* Fri May 18 2012 Jethro Carr <jethro.carr@amberdms.com> 1.4.2
-- Released version 1.4.2 [bugfix]
-* Sun May 06 2012 Jethro Carr <jethro.carr@amberdms.com> 1.4.1
-- Released version 1.4.1 [stable]
-* Thu Apr 26 2012 Jethro Carr <jethro.carr@amberdms.com> 1.4.0
-- Released version 1.4.0 [stable]
-* Wed Mar 21 2012 Jethro Carr <jethro.carr@amberdms.com> 1.3.0
-- Released version 1.3.0 [stable]
-* Thu Feb  9 2012 Jethro Carr <jethro.carr@amberdms.com> 1.2.0
-- Released version 1.2.0 [stable]
-* Sun Aug 16 2011 Jethro Carr <jethro.carr@amberdms.com> 1.1.0
-- Released version 1.1.0 [stable]
-* Sun Jul 24 2011 Jethro Carr <jethro.carr@amberdms.com> 1.0.0
-- Released version 1.0.0 [stable]
-* Thu Apr  7 2011 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_beta_2
-- Released version 1.0.0_beta_2 bug fix release
-* Wed Apr  6 2011 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_beta_1
-- Released version 1.0.0_beta_1
-* Mon Mar 28 2011 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_alpha_5
-- Released version 1.0.0_alpha_5
-* Tue Jun 08 2010 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_alpha_4
-- Released version 1.0.0_alpha_4
-* Sun May 30 2010 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_alpha_3
-- Released version 1.0.0_alpha_3
-* Fri May 28 2010 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_alpha_2
-- Released version 1.0.0_alpha_2
-* Mon May 24 2010 Jethro Carr <jethro.carr@amberdms.com> 1.0.0_alpha_1
-- Inital Application Release
+* Mon Mar 11 2013 Jethro Carr <jethro.carr@jethrocarr.com> 0.0.1-1
+- Pre-alpha release for testing & bug fixing
 

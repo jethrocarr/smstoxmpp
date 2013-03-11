@@ -67,12 +67,12 @@ system("cp -avr * /tmp/$name_withversion/");
 # we have finished with the orignal source
 chdir("/tmp");
 
-# remove SVN stuff
+# remove SVN/GIT stuff
 system("find $name_withversion/* -type d | grep .svn | sed \"s/^/rm -rf /\" | sh");
+system("find $name_withversion/* -type d | grep .git | sed \"s/^/rm -rf /\" | sh");
 
 # remove a config file if one exists
-system("rm -f $name_withversion/htdocs/include/config-settings.php");
-system("rm -f $name_withversion/bind/include/config-settings.php");
+system("rm -f $name_withversion/app/config/config.ini");
 
 # insert version into spec file and write changed version to /tmp/ location
 open(IN, "$name_withversion/resources/$name_base.spec") || die("Unable to open spec file");
