@@ -559,7 +559,7 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 				// download the list of address book objects
 				// (we just grab the IDs and date modified here)
 				try {
-					$address_list_xml = $carddav->get(false, false);
+					$address_list_xml = @$carddav->get(false, false);
 				}
 				catch (Exception $e)
 				{
@@ -569,6 +569,7 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 
 				$address_list_array	= xmlstr_to_array($address_list_xml);
 				$address_list_update	= array();
+				$address_list_all	= array();
 
 
 				// run through the list and see which ones need updating
@@ -596,14 +597,29 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 						$log->debug("[contacts] VCard $filename is not on disk and needs fetching");
 						$address_list_update[] = $address_list_entry["id"];
 					}
+
+					$address_list_all[] = $address_list_entry["id"];
+				}
+
+				// delete old vcards that don't exist in the upstream address book
+				foreach (glob($config["SMStoXMPP"]["contacts_store"] ."/*.vcf") as $filename)
+				{
+					$filename = substr(basename($filename), 0, -4);
+
+					if (!in_array($filename, $address_list_all))
+					{
+						$log->debug("[contacts] Deleting \"$filename\", no longer present in upstream address book");
+						@unlink($filename);
+					}
 				}
 
 
-				$address_list_total_all		= count(array_keys($address_list_array["element"]));
+				$address_list_total_all		= count($address_list_all);
 				$address_list_total_update	= count($address_list_update);
 
 				unset($address_list_xml);
 				unset($address_list_array);
+				unset($address_list_all);
 
 				$log->info("[contacts] Total of {$address_list_total_all} contacts, need to update/fetch {$address_list_total_update} of them");
 
@@ -704,12 +720,22 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 
 						if ($name)
 						{
+							$custom_label_map = array(); // used to track custom labels within the carddav entry
+
 							foreach ($vcard_array as $line)
 							{
-								if (preg_match("/^TEL;(\S*?):(\S*)$/", $line, $matches))
+
+								if (preg_match("/^TEL;(\S*?):([\S\s]*)$/", $line, $matches))
 								{
+									/*
+										Standard CardDAV Entry, looks something like:
+
+										TEL;TYPE=CELL,PREF:+1223457
+										TEL;TYPE=WORK:+12123456
+									*/
 									$options = $matches[1];
 									$number  = $matches[2];
+									$number  = str_replace(" ", "", $number);
 
 									$address_map[ $number ]["name"] = $name;
 
@@ -719,6 +745,40 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 									{
 										$address_map[ $number ]["type"] = $matches[1];
 									}
+								}
+								elseif (preg_match("/^item([0-9]*).TEL:([\S\s]*)$/", $line, $matches))
+								{
+									/*
+										Custom Labels CardDAV Entry on Android
+
+										Custom labels are trickier, since they end up having
+										multiple lines, and it may not be standardised.
+
+										Looks like:
+										item1.TEL:+121234567
+										item2.TEL:+988765444
+										item1.X-ABLabel:Timbucktu Number
+										item2.X-ABLabel:Seaside Batch
+									*/
+
+									$itemid = $matches[1];
+									$number = $matches[2];
+									$number = str_replace(" ", "", $number);
+
+									$address_map[ $number ]["name"] = $name;
+
+									$custom_label_map[ $itemid ] = $number;
+								}
+								elseif (preg_match("/^item([0-9]*).X-ABLabel:([\S\s]*)$/", $line, $matches))
+								{
+									/*
+										Item ID for custom labels (see above)
+									*/
+
+									$itemid = $matches[1];
+									$label  = $matches[2];
+
+									$address_map[ $custom_label_map[ $itemid ] ]["type"] = $label;
 								}
 							}
 						}
@@ -734,8 +794,6 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 				$log->info("[contacts] Scan completed, all contact numbers now in memory");
 				$address_rescan = false;
 
-				print_r($address_map);
-
 			} // end of CardDAV Sync
 
 
@@ -746,27 +804,35 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 				or request numbers for a particular name search.
 			*/
 
-			// TODO write me
-			print "[contacts] contacts worker ready....\n";
-			
 			$message = null;
 			$message_type = null;
 
 			msg_receive($msg_queue, MESSAGE_CONTACTS_REQ, $message_type, MESSAGE_MAX_SIZE, $message, TRUE);
-			$log->debug("[contacts] Lookup request for {$message["phone"]}");
-
-
-			$request = array();
-			if (isset($address_map[ $message["phone"] ]))
+			
+			if ($message["type"] == "phone_number")
 			{
-				$request["name"] = $address_map[ $message["phone"] ]["name"];
-				$request["type"] = $address_map[ $message["phone"] ]["type"];
-				
-				$log->debug("[contacts] Phone number resolved to {$request["name"]}");
+				$log->debug("[contacts] Phone number lookup request for {$message["phone"]}");
+
+				$request = array();
+				if (isset($address_map[ $message["phone"] ]))
+				{
+					$request["name"] = $address_map[ $message["phone"] ]["name"];
+					$request["type"] = $address_map[ $message["phone"] ]["type"];
+					
+					$log->debug("[contacts] Phone number resolved to {$request["name"]}");
+				}
+				else
+				{
+					$log->debug("[contacts] Unknown phone number");
+				}
+			}
+			elseif ($message["type"] == "search")
+			{
+				$log->debug("[contacts] Contacts search request for {$message["search"]}");
 			}
 			else
 			{
-				$log->debug("[contacts] Unknown phone number");
+				$log->error("[contacts] Malformed request provided!");
 			}
 
 			msg_send($msg_queue, (MESSAGE_CONTACTS_ASR + $message["workerpid"]), $request);
@@ -805,6 +871,7 @@ foreach (array_keys($config) as $section)
 	{
 		// we are the child
 		$log->debug("Worker/child process launched for device \"$section\"");
+		$pid_child = getmypid();
 
 
 		/*
@@ -938,13 +1005,13 @@ foreach (array_keys($config) as $section)
 								{
 									$help[] = " ";
 									$help[] = "Available Commands:";
-									$help[] = " ";
+									$help[] = "---";
 									$help[] = "_chat NAME|NUMBER\tOpen an SMS conversation to a person or phone number";
-									$help[] = "_find NAME\tSearch the address book for a name (use * to list all)";
-									$help[] = "_help\tThis help message";
-									$help[] = "_usage\tExamples of command usage";
-									$help[] = "_version\tApplication & platform version information.";
-									$help[] = "_health_check\tPerform an instant check of the gateway device status.";
+									$help[] = "_find NAME\t\tSearch the address book for a name (use * to list all)";
+									$help[] = "_help\t\t\tThis help message";
+									$help[] = "_usage\t\tExamples of command usage";
+									$help[] = "_version\t\tApplication & platform version information.";
+									$help[] = "_health_check\t\tPerform an instant check of the gateway device status.";
 									$help[] = " ";
 								}
 
@@ -966,7 +1033,8 @@ foreach (array_keys($config) as $section)
 								$help[] = "---";
 								$help[] = "To open a new chat, prefix the message with the destination phone number, eg:";
 								$help[] = "+121234567 example message";
-								$help[] = "Or use _chat to select the number or person to chat to, and then type messages without needing to prefix";
+								$help[] = " ";
+								$help[] = "Or use _chat to select the number or name of the person to chat to:";
 								$help[] = "_chat +121234567";
 								$help[] = "_chat example contact";
 								$help[] = "example message";
@@ -997,71 +1065,135 @@ foreach (array_keys($config) as $section)
 
 								$current_status = null;
 							break;
-
+							
 							default:
-								/*
-									An actual message, we need to check it for syntax validity.
-
-									Should be either
-									"message text here" when in context of an existing chat
-									or
-									"+12134567: message text here" when direct sending
-								*/
-								
-								// toss out those @$%^&* newlines
-								if ($pl["body"] == "")
+								if (preg_match("/^_chat/", $pl["body"]))
 								{
-									break;
-								}
+									$log->debug("[$section] Recieved _chat command");
 
-								$log->debug("[$section] XMPP message recieved! \"". $pl["body"] ."\"");
-
-								// check gateway health - if unhealthy, we are not going to be able to send
-								if (!$gateway->health_check($force=true))
-								{
-									$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
-									break;
-								}
-
-								// TODO: address book lookup logic here
-
-
-								// TODO: input validation here!
-
-								// fetch number & message then send
-								if (preg_match("/^([+0-9]*)[:]*\s([\S\s]*)$/", $pl["body"], $matches))
-								{
-									$phone	= $matches[1];
-									$body	= $matches[2];
-
-									if ($gateway->message_send($phone, $body))
+									if (preg_match("/^_chat ([+]*[0-9\s-]*)$/", $pl["body"], $matches))
 									{
-										$log->debug("[$section] Message delivered successfully");
+										$number = $matches[1];
+										$number = str_replace(" ", "", $number);
+										$number = str_replace("-", "", $number);
+
+										$current_chat = $number;
+
+										$conn->message($config[$section]["xmpp_reciever"], $body="You are now talking to $number", $subject=$number);
+									}
+									elseif (preg_match("/^_chat ([\S\s]*)$/", $pl["body"], $matches))
+									{
+										$search = $matches[1];
+
+										$log->debug("[$section] Doing a _chat lookup for \"$search\"");
 									}
 									else
 									{
-										$log->warning("[$section] Unable to deliver message from XMPP to gateway.");
-										$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
+										$conn->message($config[$section]["xmpp_reciever"], $body="Invalid command, syntax is: _chat NAME|NUMBER");
 									}
 
-									// save number as current chat destinatoin
-									$conn->message($config[$section]["xmpp_reciever"], $body="Chat target has changed, you are now talking to {$phone}, all unaddressed replies will go to this recipient.", $subject=$phone);
-									$current_chat = $phone;
+
+								}
+								elseif (preg_match("/^_find\s([\S\s]*)$/", $pl["body"], $matches))
+								{
+									$log->debug("[$section] Recieved _find command");
+
+									if ($pid_contacts)
+									{
+										// we give the contacts worker our PID, so it can reply to us specifically
+										$request = array();
+										$request["type"]	= "search";
+										$request["workerpid"]	= getmypid();
+										$request["search"]	= $matches[1];
+
+										msg_send($msg_queue, MESSAGE_CONTACTS_REQ, $request);
+
+										// this is hacky, we wait 0.1 seconds for a response, ideally need a blocking request
+										// here, but there's no native support for it.... so would have to do nasty tricks
+										// like timer loops and checks. :-/
+										usleep(100000);
+
+										$address_lookup_type = null;
+										$address_lookup = null;
+
+										if (msg_receive($msg_queue, (MESSAGE_CONTACTS_ASR + $request["workerpid"]), $address_lookup_type, MESSAGE_MAX_SIZE, $address_lookup, TRUE, MSG_IPC_NOWAIT))
+										{
+											if (!empty($address_lookup))
+											{
+												// TODO: display/auto-select responses
+											}
+										}
+									}
+									else
+									{
+										$conn->message($pl["from"], $body="Sorry, there is no source of contacts information configured.");
+									}
+
 								}
 								else
 								{
-									if (!$current_chat)
+
+									/*
+										An actual message, we need to check it for syntax validity.
+
+										Should be either
+										"message text here" when in context of an existing chat
+										or
+										"+12134567: message text here" when direct sending
+									*/
+									
+									// toss out those @$%^&* newlines
+									if ($pl["body"] == "")
 									{
-										$conn->message($pl["from"], $body="Unable to send - please specify destination phone number using syntax \"+XXXXXXX my message\"");
+										break;
+									}
+
+									$log->debug("[$section] XMPP message recieved! \"". $pl["body"] ."\"");
+
+									// check gateway health - if unhealthy, we are not going to be able to send
+									if (!$gateway->health_check($force=true))
+									{
+										$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
+										break;
+									}
+
+
+									// TODO: input validation here!
+
+									// fetch number & message then send
+									if (preg_match("/^([+0-9]*)[:]*\s([\S\s]*)$/", $pl["body"], $matches))
+									{
+										$phone	= $matches[1];
+										$body	= $matches[2];
+
+										if ($gateway->message_send($phone, $body))
+										{
+											$log->debug("[$section] Message delivered successfully");
+										}
+										else
+										{
+											$log->warning("[$section] Unable to deliver message from XMPP to gateway.");
+											$conn->message($config[$section]["xmpp_reciever"], $body="Message undeliverable, gateway is currently unhealthy.");
+										}
+
+										// save number as current chat destinatoin
+										$conn->message($config[$section]["xmpp_reciever"], $body="Chat target has changed, you are now talking to {$phone}, all unaddressed replies will go to this recipient.", $subject=$phone);
+										$current_chat = $phone;
 									}
 									else
 									{
-										// we know the current chat name, so just send the string to them
-										$gateway->message_send($current_chat, $pl["body"]);
+										if (!$current_chat)
+										{
+											$conn->message($pl["from"], $body="Unable to send - please specify destination phone number using syntax \"+XXXXXXX my message\"");
+										}
+										else
+										{
+											// we know the current chat name, so just send the string to them
+											$gateway->message_send($current_chat, $pl["body"]);
+										}
 									}
-								}
-								
 
+								} // end of actual message
 
 							break;
 						}
@@ -1144,6 +1276,7 @@ foreach (array_keys($config) as $section)
 					{
 						// we give the contacts worker our PID, so it can reply to us specifically
 						$request = array();
+						$request["type"]	= "phone_number";
 						$request["workerpid"]	= getmypid();
 						$request["phone"]	= $message["phone"];
 
