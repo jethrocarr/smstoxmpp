@@ -331,26 +331,6 @@ if (isset($options_set["daemon"]))
 }
 
 
-/*
-	Run as a non-privileged user.
-
-	Considering we are running as a long running process, we should
-	definetely run as a non-privileged user to protect in case of a 
-	worst-case exploit.
-
-	Note that this doesn't apply unless the process is launched by
-	the root user, such as when started by init
-*/
-
-if ($config["SMStoXMPP"]["app_user"] && $config["SMStoXMPP"]["app_group"])
-{
-	$user = posix_getpwnam($config["SMStoXMPP"]["app_user"]);
-	@posix_setuid($user['uid']);
-
-	$group = posix_getgrnam($config["SMStoXMPP"]["app_group"]);
-	@posix_setgid($group['gid']);
-}
-
 
 
 
@@ -370,7 +350,7 @@ if (!touch($config["SMStoXMPP"]["app_lock"]))
 	die("Fatal Error: Unable to create lock file\n");
 }
 
-if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'),0666 | IPC_CREAT))
+if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'), 0666 | IPC_CREAT))
 {
 	die("Fatal Error: Unable to attach to queue ". $config["SMStoXMPP"]["app_lock"] ."\n");
 }
@@ -411,6 +391,27 @@ if (!$pid_logger)
 
 	$log->debug("Launched logger fork");
 	$log->debug("[child $pid_child] is logging worker ");
+
+
+	/*
+		Run as a non-privileged user.
+
+		Considering we are running as a long running process, we should
+		definetely run as a non-privileged user to protect in case of a 
+		worst-case exploit.
+
+		Note that this doesn't apply unless the process is launched by
+		the root user, such as when started by init
+	*/
+
+	if ($config["SMStoXMPP"]["app_user"] && $config["SMStoXMPP"]["app_group"])
+	{
+		$user = posix_getpwnam($config["SMStoXMPP"]["app_user"]);
+		@posix_setuid($user['uid']);
+
+		$group = posix_getgrnam($config["SMStoXMPP"]["app_group"]);
+		@posix_setgid($group['gid']);
+	}
 
 
 	// handle posix signals in a sane way
@@ -459,6 +460,8 @@ $log->info("[master] Launched ". APP_NAME ." (". APP_VERSION .")");
 
 
 
+
+
 /*
 	Launch contacts lookup worker fork
 
@@ -489,6 +492,7 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 		$log->info("[contacts] Launched CardDAV contacts/address book lookup worker fork");
 		$log->debug("[child $pid_child] is contacts worker ");
 
+
 		// verify installed modules
 		if (!class_exists('XMLWriter'))
 		{
@@ -510,7 +514,13 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 			if (!file_exists($config["SMStoXMPP"]["contacts_store"]))
 			{
 				// attempt to create the directory, we may just be missing the top level dir and have rights to create
-				if (!@mkdir($config["SMStoXMPP"]["contacts_store"], 0770))
+				if (mkdir($config["SMStoXMPP"]["contacts_store"]))
+				{
+					@chmod($config["SMStoXMPP"]["contacts_store"], 0770);
+					@chown($config["SMStoXMPP"]["contacts_store"], $config["SMStoXMPP"]["app_user"]);
+					@chgrp($config["SMStoXMPP"]["contacts_store"], $config["SMStoXMPP"]["app_group"]);
+				}
+				else
 				{
 					$log->error_fatal("[contacts] Contacts store directory ({$config["SMStoXMPP"]["contacts_store"]}) does not exist");
 				}
@@ -521,6 +531,28 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 				$log->error_fatal("[contacts] Contacts store directory ({$config["SMStoXMPP"]["contacts_store"]}) is not writable");
 			}
 		}
+
+
+		/*
+			Run as a non-privileged user.
+
+			Considering we are running as a long running process, we should
+			definetely run as a non-privileged user to protect in case of a 
+			worst-case exploit.
+
+			Note that this doesn't apply unless the process is launched by
+			the root user, such as when started by init
+		*/
+
+		if ($config["SMStoXMPP"]["app_user"] && $config["SMStoXMPP"]["app_group"])
+		{
+			$user = posix_getpwnam($config["SMStoXMPP"]["app_user"]);
+			@posix_setuid($user['uid']);
+
+			$group = posix_getgrnam($config["SMStoXMPP"]["app_group"]);
+			@posix_setgid($group['gid']);
+		}
+
 
 
 		// connect to CardDAV
@@ -880,6 +912,28 @@ foreach (array_keys($config) as $section)
 		// we are the child
 		$log->debug("Worker/child process launched for device \"$section\"");
 		$pid_child = getmypid();
+
+
+		/*
+			Run as a non-privileged user.
+
+			Considering we are running as a long running process, we should
+			definetely run as a non-privileged user to protect in case of a 
+			worst-case exploit.
+
+			Note that this doesn't apply unless the process is launched by
+			the root user, such as when started by init
+		*/
+
+		if ($config["SMStoXMPP"]["app_user"] && $config["SMStoXMPP"]["app_group"])
+		{
+			$user = posix_getpwnam($config["SMStoXMPP"]["app_user"]);
+			@posix_setuid($user['uid']);
+
+			$group = posix_getgrnam($config["SMStoXMPP"]["app_group"]);
+			@posix_setgid($group['gid']);
+		}
+
 
 
 		/*
