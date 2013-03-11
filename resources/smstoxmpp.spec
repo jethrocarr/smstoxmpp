@@ -1,7 +1,7 @@
 Summary: A daemon to exchange messages between SMS gateway devices and XMPP
 Name: smstoxmpp
 Version: 0.0.1
-Release: 2%{dist}
+Release: 5%{dist}
 License: AGPLv3
 URL: http://projects.jethrocarr.com/p/oss-smstoxmpp
 Group: Applications/Internet
@@ -49,7 +49,7 @@ ln -s %{_datadir}/smstoxmpp/app/dispatcher.php $RPM_BUILD_ROOT%{_bindir}/smstoxm
 
 # install the daemon bootscript
 mkdir -p $RPM_BUILD_ROOT/etc/init.d/
-mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/smstoxmpp
+mkdir -p $RPM_BUILD_ROOT%{_localstatedir}/lib/smstoxmpp/
 install -m 755 resources/smstoxmppd.rcsysinit $RPM_BUILD_ROOT/etc/init.d/smstoxmppd
 
 
@@ -86,7 +86,7 @@ rm -rf $RPM_BUILD_ROOT
 %{_datadir}/smstoxmpp/docs/
 %{_bindir}/smstoxmppd
 /etc/init.d/smstoxmppd
-%{_localstatedir}/smstoxmpp
+%attr(770,root,nobody) %{_localstatedir}/lib/smstoxmpp
 %docdir %{_datadir}/smstoxmpp/docs/
 
 
