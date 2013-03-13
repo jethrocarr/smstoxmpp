@@ -776,6 +776,7 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 									$options = $matches[1];
 									$number  = $matches[2];
 									$number  = str_replace(" ", "", $number);
+									$number  = str_replace("-", "", $number);
 
 									$address_map[ $number ]["name"] = $name;
 
@@ -803,7 +804,8 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 
 									$itemid = $matches[1];
 									$number = $matches[2];
-									$number = str_replace(" ", "", $number);
+									$number  = str_replace(" ", "", $number);
+									$number  = str_replace("-", "", $number);
 
 									$address_map[ $number ]["name"] = $name;
 
@@ -864,11 +866,85 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 				else
 				{
 					$log->debug("[contacts] Unknown phone number");
+
+
 				}
 			}
 			elseif ($message["type"] == "search")
 			{
 				$log->debug("[contacts] Contacts search request for {$message["search"]}");
+
+				$request = array();
+
+				foreach (array_keys($address_map) as $number)
+				{
+					$request_number = 0;
+
+					$search_number_filtered = str_replace(" ", "", $message["search"]);
+					$search_number_filtered = str_replace("-", "", $search_number_filtered);
+					
+					if ($address_map[ $number ]["type"])
+					{
+						$name_full = $address_map[ $number ]["name"] ." | ". $address_map[ $number ]["type"] ."";
+					}
+					else
+					{
+						$name_full = $address_map[ $number ]["name"];
+					}
+
+					// check for a search with name|type and search the name and type seporately
+					// if that's the case
+					//
+					// allows for tricks like
+					// _find firstna|au
+					// rather than the full
+					// _find firstname lastname|au cellphone
+					//
+					// much faster! :-D
+					//
+					$search_split = explode("|", $message["search"]);
+
+					if (count($search_split) == 2)
+					{
+						if (preg_match("/{$search_split[0]}/i", $address_map[ $number ]["name"]) &&
+						    preg_match("/{$search_split[1]}/i", $address_map[ $number ]["type"]))
+						{
+							$request_number = 1;
+						}
+					}
+					else
+					{
+						// general name/number matches:
+						if (preg_match("/{$message["search"]}/i", $name_full))
+						{
+							$request_number = 1;
+						}
+						elseif (preg_match("/{$message["search"]}/i", $number))
+						{
+							$request_number = 1;
+						}
+						elseif (preg_match("/{$search_number_filtered}/i", $number))
+						{
+							$request_number = 1;
+						}
+					}
+
+					if ($request_number)
+					{
+						$log->debug("[contacts] Found a match with \"$number\" aka \"{$address_map[ $number ]["name"]}\"");
+
+						$request_tmp		= array();
+						$request_tmp["number"]	= $number;
+						$request_tmp["name"]	= $address_map[ $number ]["name"];
+
+						if ($address_map[ $number ]["type"])
+						{
+							$request_tmp["name"] = $name_full;
+						}
+						
+						$request[] = $request_tmp;
+					}
+				}
 			}
 			else
 			{
@@ -1070,6 +1146,7 @@ foreach (array_keys($config) as $section)
 									$help[] = "---";
 									$help[] = "_chat NAME|NUMBER\tOpen an SMS conversation to a person or phone number";
 									$help[] = "_find NAME\t\tSearch the address book for a name (use * to list all)";
+									$help[] = "_who\t\t\tWhom am I currently chatting to?";
 									$help[] = "_help\t\t\tThis help message";
 									$help[] = "_usage\t\tExamples of command usage";
 									$help[] = "_version\t\tApplication & platform version information.";
@@ -1127,6 +1204,20 @@ foreach (array_keys($config) as $section)
 
 								$current_status = null;
 							break;
+
+							case "_who":
+								if ($current_chat)
+								{
+									$conn->message($pl["from"], $body="Currently chatting to $current_chat");
+
+									//TODO: add contacts lookup here
+								}
+								else
+								{
+									$conn->message($pl["from"], $body="Not currently chatting to anyone");
+								}
+
+							break;
 							
 							default:
 								if (preg_match("/^_chat/", $pl["body"]))
@@ -1148,12 +1239,69 @@ foreach (array_keys($config) as $section)
 										$search = $matches[1];
 
 										$log->debug("[$section] Doing a _chat lookup for \"$search\"");
+
+										if ($pid_contacts)
+										{
+											// we give the contacts worker our PID, so it can reply to us specifically
+											$request = array();
+											$request["type"]	= "search";
+											$request["workerpid"]	= getmypid();
+											$request["search"]	= $matches[1];
+
+											msg_send($msg_queue, MESSAGE_CONTACTS_REQ, $request);
+
+											// this is hacky, we wait 0.1 seconds for a response, ideally need a blocking request
+											// here, but there's no native support for it.... so would have to do nasty tricks
+											// like timer loops and checks. :-/
+											usleep(100000);
+
+											$address_lookup_type = null;
+											$address_lookup = null;
+
+											if (msg_receive($msg_queue, (MESSAGE_CONTACTS_ASR + $request["workerpid"]), $address_lookup_type, MESSAGE_MAX_SIZE, $address_lookup, TRUE, MSG_IPC_NOWAIT))
+											{
+												if (!empty($address_lookup))
+												{
+													if (count(array_keys($address_lookup)) > 1)
+													{
+														// more than one result, we need to do a general search
+														$msg   = array();
+														$msg[] = "More than one match, please refine to match one of the following:";
+
+														foreach ($address_lookup as $contact)
+														{
+															$msg[] = "{$contact["number"]} \t {$contact["name"]}";
+														}
+
+														foreach ($msg as $line)
+														{
+															$conn->message($pl["from"], $body="$line");
+														}
+													}
+													else
+													{
+														// only one result
+														$current_chat = $address_lookup[0]["number"];
+
+														$conn->message($config[$section]["xmpp_reciever"], $body="You are now talking to \"{$address_lookup[0]["name"]}\" ($current_chat)", $subject=$current_chat);
+													}
+												}
+												else
+												{
+													$conn->message($pl["from"], $body="Sorry, no matching results for this search");
+												}
+											}
+
+										} // end of if contacts
+										else
+										{
+											$conn->message($config[$section]["xmpp_reciever"], $body="Unable to do a name lookup, you need to configure a CardDAV address book source.");
+										}
 									}
 									else
 									{
 										$conn->message($config[$section]["xmpp_reciever"], $body="Invalid command, syntax is: _chat NAME|NUMBER");
 									}
-
 
 								}
 								elseif (preg_match("/^_find\s([\S\s]*)$/", $pl["body"], $matches))
@@ -1182,7 +1330,22 @@ foreach (array_keys($config) as $section)
 										{
 											if (!empty($address_lookup))
 											{
-												// TODO: display/auto-select responses
+												$msg   = array();
+												$msg[] = "Lookup results:";
+
+												foreach ($address_lookup as $contact)
+												{
+													$msg[] = "{$contact["number"]} \t {$contact["name"]}";
+												}
+
+												foreach ($msg as $line)
+												{
+													$conn->message($pl["from"], $body="$line");
+												}
+											}
+											else
+											{
+												$conn->message($pl["from"], $body="Sorry, no matching results for this search");
 											}
 										}
 									}
