@@ -95,7 +95,7 @@ class device_gateway
 		else
 		{
 			// gateway device has a static path configured
-			list($address, $port) = explode(":", $path);
+			list($address, $port) = @explode(":", $path);
 
 			if (preg_match("/^[0-9]*$/", $port) && preg_match("/^\S*$/", $address))
 			{

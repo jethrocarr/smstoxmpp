@@ -188,7 +188,7 @@ foreach (array_keys($options_all) as $key)
 
 	if ($options_all[$key]["short"])
 	{
-		if ($options_all[$key]["getopt"])
+		if (isset($options_all[$key]["getopt"]))
 		{
 			$options_short .= $options_all[$key]["getopt"];
 		}
@@ -350,7 +350,7 @@ if (!touch($config["SMStoXMPP"]["app_lock"]))
 	die("Fatal Error: Unable to create lock file\n");
 }
 
-if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'), 0666 | IPC_CREAT))
+if (!$msg_queue = msg_get_queue(ftok($config["SMStoXMPP"]["app_lock"], 'R'), 0666 | 'IPC_CREAT'))
 {
 	die("Fatal Error: Unable to attach to queue ". $config["SMStoXMPP"]["app_lock"] ."\n");
 }
@@ -1016,20 +1016,20 @@ foreach (array_keys($config) as $section)
 			Establish connection to the XMPP server
 		*/
 
-		if (!$config[$section]["xmpp_server"])
+		if (empty($config[$section]["xmpp_server"]))
 		{
 			$log->error_fatal("An XMPP server must be configured");
 		}
-		if (!$config[$section]["xmpp_port"])
+		if (empty($config[$section]["xmpp_port"]))
 		{
 			// default protocol port
 			$config[$section]["xmpp_port"] = "5222";
 		}
-		if (!$config[$section]["xmpp_username"])
+		if (empty($config[$section]["xmpp_username"]))
 		{
 			$log->error_fatal("An XMPP user must be configured");
 		}
-		if (!$config[$section]["xmpp_reciever"])
+		if (empty($config[$section]["xmpp_reciever"]))
 		{
 			$log->error_fatal("An XMPP reciever must be configured!");
 		}

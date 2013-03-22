@@ -3,6 +3,8 @@
 	Shared definitions throughout the application
 */
 
+date_default_timezone_set(@date_default_timezone_get());
+
 define("APP_NAME", "SMStoXMPP");
 define("APP_VERSION", "1.0.0_beta_1");
 define("APP_LICENSE", "GNU AGPLv3");

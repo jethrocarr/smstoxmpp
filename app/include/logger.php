@@ -25,7 +25,7 @@ class logger
 	*/
 	function __destruct()
 	{
-		if ($logfile_handle)
+		if (isset($logfile_handle))
 		{
 			fclose($logfile_handle);
 		}
@@ -101,14 +101,14 @@ class logger
 	{
 		$this->set_queue($msgqueue_handle, $message_type, $message_maxsize);
 
-		$this->option_set_queue_listener = true;
+		$this->option_msgqueue_listener = true;
 	}
 	
 	function set_queue_sender($msgqueue_handle, $message_type, $message_maxsize)
 	{
 		$this->set_queue($msgqueue_handle, $message_type, $message_maxsize);
 
-		$this->option_set_queue_sender = true;
+		$this->option_msgqueue_sender = true;
 	}
 
 
@@ -136,7 +136,7 @@ class logger
 		}
 
 		// via IPC to another process
-		if ($this->option_set_queue_sender)
+		if ($this->option_msgqueue_sender)
 		{
 			// send to queue
 			$queue_message = array(
@@ -168,7 +168,7 @@ class logger
 
 	function write_fromqueue($blocking = false)
 	{
-		if ($this->option_set_queue_listener)
+		if ($this->option_msgqueue_listener)
 		{
 			$message = "";
 			$message_type = "";
