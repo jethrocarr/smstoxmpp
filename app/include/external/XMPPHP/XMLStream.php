@@ -472,12 +472,14 @@ class XMPPHP_XMLStream {
 		}
 		if(array_key_exists($event_key, $this->until_payload)) {
 			$payload = $this->until_payload[$event_key];
-			unset($this->until_payload[$event_key]);
-			unset($this->until_count[$event_key]);
-			unset($this->until[$event_key]);
 		} else {
 			$payload = array();
 		}
+		
+		unset($this->until_payload[$event_key]);
+		unset($this->until_count[$event_key]);
+		unset($this->until[$event_key]);
+
 		return $payload;
 	}
 
