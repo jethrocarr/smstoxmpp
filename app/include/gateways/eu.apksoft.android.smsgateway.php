@@ -187,6 +187,40 @@ class device_gateway
 		return $message;
 	}
 
+	
+	/*
+		message_poll
+
+		Actively polls for a new incomming message. This is unused by this gateway, but
+		is needed with any gateways that are unable to push to an HTTP listener which
+		can be handled by message_listen()
+
+		Returns
+		0	No Message
+		array	Message in array
+	*/
+
+	function message_poll()
+	{
+		/*
+			Provide multidimensional array of hashes with messages recieved.
+
+			return (
+			 [0] => (
+			 	 phone => value,
+				 body => value,
+				)
+			 [1] => (
+			 	 phone => value
+				 body => value
+			        )
+			)
+			etc
+
+		*/
+		// placeholder only
+		return 0;
+	}
 
 
 	/*

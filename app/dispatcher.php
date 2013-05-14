@@ -33,6 +33,14 @@ include 'include/logger.php';
 
 
 /*
+	Set sane PHP options required for daemonised run mode
+*/
+
+set_time_limit(0);
+gc_enable();
+
+
+/*
 	Custom Signal Handlers
 
 	Due to the multi-process nature, logger and other complexities, we need to
@@ -126,8 +134,15 @@ function sig_handler_child($signo)
 	$log->debug("[child $pid_child] Peak memory usage of ". memory_get_peak_usage() ." bytes");
 	$log->debug("[child $pid_child] Terminating child support process & parent");
 
-	if ($signo == SIGTERM || $signo == SIGHUP)
+	if ($signo == SIGTERM)
 	{
+		sleep(1);
+		exit();
+	}
+	elseif ($signo == SIGHUP)
+	{	
+		// currently no restart logic
+		sleep(1);
 		exit();
 	}
 	elseif ($signo == SIGINT || $signo == SIGUSR1)
@@ -424,6 +439,10 @@ if (!$pid_logger)
 	// blocking write of logs
 	while (true)
 	{
+		// garbage collect, needed for long running scripts
+		gc_collect_cycles();
+
+		// blocking wait for log messages
 		$log->write_fromqueue($blocking = true);
 	}
 
@@ -578,6 +597,9 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 		// background worker loop
 		while (true)
 		{
+			// garbage collect - needed with long running scripts
+			gc_collect_cycles();
+
 			if ($address_rescan == true)
 			{
 				/*
@@ -948,7 +970,9 @@ if ($config["SMStoXMPP"]["contacts_lookup"] == true)
 			}
 			else
 			{
-				$log->error("[contacts] Malformed request provided!");
+				// this can trigger during app shutdown
+				$log->debug("[contacts] Malformed request provided!");
+				$request = array();
 			}
 
 			msg_send($msg_queue, (MESSAGE_CONTACTS_ASR + $message["workerpid"]), $request);
@@ -1097,6 +1121,16 @@ foreach (array_keys($config) as $section)
 
 		while (true)
 		{
+			// garbage collect, needed with long running scripts
+			gc_collect_cycles();
+
+			// memory debugging assist
+			//$mem_used_curr = memory_get_peak_usage();
+			//$mem_used_increase = $mem_used_curr - $mem_used_last;
+			//print "[$section] @".  memory_get_usage() ." - Peak memory usage currently $mem_used_curr, last was $mem_used_last bytes (+ $mem_used_increase)\n";
+			//$mem_used_last = $mem_used_curr;
+		
+
 			/*
 				Wait for a valid event occurs that we can process, OR
 				up to the timeout limit, in which case we then go and
@@ -1291,6 +1325,10 @@ foreach (array_keys($config) as $section)
 													$conn->message($pl["from"], $body="Sorry, no matching results for this search");
 												}
 											}
+											else
+											{
+												$conn->message($pl["from"], $body="Lookup failed - if the server has just been started, it may still be syncing contacts");
+											}
 
 										} // end of if contacts
 										else
@@ -1347,6 +1385,10 @@ foreach (array_keys($config) as $section)
 											{
 												$conn->message($pl["from"], $body="Sorry, no matching results for this search");
 											}
+										}
+										else
+										{
+											$conn->message($pl["from"], $body="Lookup failed - if the server has just been started, it may still be syncing contacts");
 										}
 									}
 									else
@@ -1457,6 +1499,35 @@ foreach (array_keys($config) as $section)
 					case 'end_stream':
 						$log->debug("[$section] User closed our XMPP session");
 					break;
+				}
+			}
+
+			unset($payloads);
+
+			/*
+				Poll for new incoming messages.
+
+				Not all gateways need this function, but it allows the support
+				of gateways which need regular polling for new messages.
+			*/
+
+			if ($newmessage_array = $gateway->message_poll())
+			{
+				foreach ($newmessage_array as $newmessage)
+				{
+					// conduct some sanity checking here incase the gateway
+					// was badly written
+					if ($newmessage["body"] && $newmessage["phone"])
+					{
+						if (!msg_send($msg_queue, $msg_mylistener, $newmessage))
+						{
+							$log->warning("[$section] Unable to add new message from poll into queue");
+						}
+					}
+					else
+					{
+						$log->warning("[$section] An invalid message was provided from the gateway and could not be added to the message queue");
+					}
 				}
 			}
 
@@ -1587,7 +1658,11 @@ foreach (array_keys($config) as $section)
 					}
 				}
 
+				unset($pl);
+
 			} // end if available messages
+
+			unset($stats);
 
 
 			/*
@@ -1618,6 +1693,9 @@ foreach (array_keys($config) as $section)
 				$current_status = $status;
 			}
 
+			unset($status);
+
+			//print "[$section] @".  memory_get_usage() ." end\n";
 
 		} // end of loop
 

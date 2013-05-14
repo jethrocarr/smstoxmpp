@@ -145,7 +145,9 @@ class logger
 					"body"	=> $message,
 					);
 
-			msg_send($this->msgqueue_handle, $this->msgqueue_type, $queue_message);
+			msg_send(&$this->msgqueue_handle, &$this->msgqueue_type, $queue_message);
+
+			unset($queue_message);
 		}
 
 
@@ -154,7 +156,6 @@ class logger
 		{
 			fwrite($this->logfile_handle, "$time [$level] $message\n");
 		}
-
 	}
 
 
@@ -210,8 +211,10 @@ class logger
 	{
 		if ($this->option_debug)
 		{
-			$this->write("debug", $message);
+			$this->write("debug", &$message);
 		}
+
+		unset($message);
 	}
 
 	function info($message)
