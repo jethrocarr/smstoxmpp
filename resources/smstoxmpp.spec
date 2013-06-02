@@ -1,6 +1,6 @@
 Summary: A daemon to exchange messages between SMS gateway devices and XMPP
 Name: smstoxmpp
-Version: 0.0.1
+Version: 1.0.0
 Release: 6%{dist}
 License: AGPLv3
 URL: http://projects.jethrocarr.com/p/oss-smstoxmpp
@@ -91,6 +91,8 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
+* Sun Jun  2 2013 Jethro Carr <jethro.carr@jethrocarr.com> 1.0.0-1
+- First stable release
 * Mon Mar 11 2013 Jethro Carr <jethro.carr@jethrocarr.com> 0.0.1-1
 - Pre-alpha release for testing & bug fixing
 

@@ -6,7 +6,7 @@
 date_default_timezone_set(@date_default_timezone_get());
 
 define("APP_NAME", "SMStoXMPP");
-define("APP_VERSION", "1.0.0_beta_1");
+define("APP_VERSION", "1.0.0");
 define("APP_LICENSE", "GNU AGPLv3");
 define("APP_HOMEPAGE", "https://projects.jethrocarr.com/p/oss-smstoxmpp/");
 
