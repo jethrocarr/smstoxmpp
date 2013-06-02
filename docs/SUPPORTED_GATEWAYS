@@ -1,0 +1,19 @@
+SUPPORTED GATEWAYS
+------------------
+
+SMStoXMPP has been written to support the use of multiple different gateway devices
+by means of a plugin system making it easy to add new systems.
+
+
+The following is a list of currently supported gateways:
+
+SMS Gateway by APK Soft s.r.o
+https://play.google.com/store/apps/details?id=eu.apksoft.android.smsgateway&hl=en
+
+
+For details on configuring these gateways, please refer to:
+https://projects.jethrocarr.com/p/oss-smstoxmpp/page/Gateway-Guide/
+
+For details on writing new gateways, prefer refer to:
+https://projects.jethrocarr.com/p/oss-smstoxmpp/page/Developer-GatewaySupport/
+
