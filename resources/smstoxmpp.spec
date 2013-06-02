@@ -1,7 +1,7 @@
 Summary: A daemon to exchange messages between SMS gateway devices and XMPP
 Name: smstoxmpp
 Version: 1.0.0
-Release: 6%{dist}
+Release: 7%{dist}
 License: AGPLv3
 URL: http://projects.jethrocarr.com/p/oss-smstoxmpp
 Group: Applications/Internet
@@ -59,18 +59,12 @@ install -m 755 resources/smstoxmppd.rcsysinit $RPM_BUILD_ROOT/etc/init.d/smstoxm
 echo "Reloading httpd..."
 /etc/init.d/httpd reload
 
+# Restart SMStoXMPP upon install
 if [ $1 == 0 ];
 then
-	# upgrading existing rpm
 	echo "Restarting daemon process..."
 	/etc/init.d/smstoxmppd restart
 fi
-
-%preun
-
-# stop running process
-/etc/init.d/smstoxmppd stop
-
 
 
 %clean
@@ -91,7 +85,7 @@ rm -rf $RPM_BUILD_ROOT
 
 
 %changelog
-* Sun Jun  2 2013 Jethro Carr <jethro.carr@jethrocarr.com> 1.0.0-1
+* Sun Jun  2 2013 Jethro Carr <jethro.carr@jethrocarr.com> 1.0.0-7
 - First stable release
 * Mon Mar 11 2013 Jethro Carr <jethro.carr@jethrocarr.com> 0.0.1-1
 - Pre-alpha release for testing & bug fixing
