@@ -1158,6 +1158,9 @@ foreach (array_keys($config) as $section)
 							break;
 						}
 
+						// trim whitespace from message
+						$pl["body"] = trim($pl["body"]);
+
 						// process message
 						switch ($pl["body"])
 						{
