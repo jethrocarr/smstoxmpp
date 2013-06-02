@@ -12,7 +12,7 @@ BuildArch: noarch
 BuildRequires: gettext
 
 Requires: httpd
-Requires: php >= 5.3.0, php-xml, php-cli, php-process
+Requires: php >= 5.1.0, php-xml, php-cli, php-process
 
 
 %description
